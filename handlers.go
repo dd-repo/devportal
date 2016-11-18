@@ -277,14 +277,16 @@ func loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/account/dashboard", http.StatusSeeOther)
 		return
 	}
-
-	http.FileServer(http.Dir("/Users/matt/Sites/newcaddy")).ServeHTTP(w, r)
+	http.ServeFile(w, r, "/Users/matt/Sites/newcaddy/account/login.html")
 }
 
 func accountPage(w http.ResponseWriter, r *http.Request) {
 	acc := r.Context().Value(CtxKey("account")).(AccountInfo)
+	renderTemplate(w, "/Users/matt/Sites/newcaddy/account/dashboard.html", acc)
+}
 
-	tmpl, err := template.ParseFiles("/Users/matt/Sites/newcaddy/account/dashboard.html")
+func renderTemplate(w http.ResponseWriter, file string, ctx interface{}) {
+	tmpl, err := template.ParseFiles(file)
 	if err != nil {
 		log.Printf("template parsing: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -292,7 +294,7 @@ func accountPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, acc)
+	err = tmpl.Execute(&buf, ctx)
 	if err != nil {
 		log.Printf("template execution: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)

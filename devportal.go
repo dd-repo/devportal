@@ -86,12 +86,13 @@ func assertPasswordsMatch(plaintext string, hashed, salt []byte) error {
 
 // randString returns a string of n random characters.
 // It is not even remotely secure or a proper distribution.
-// But it's good enough for some things.
+// But it's good enough for some things. It excludes certain
+// confusing characters like I, l, 1, 0, O, etc.
 func randString(n int) string {
 	if n <= 0 {
 		return ""
 	}
-	dict := []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+	dict := []byte("abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXY3456789")
 	b := make([]byte, n)
 	for i := range b {
 		b[i] = dict[mathrand.Int63()%int64(len(dict))]

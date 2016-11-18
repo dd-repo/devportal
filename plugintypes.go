@@ -69,7 +69,11 @@ var pluginTypes = []PluginType{
 			for _, elt := range elts {
 				keyVal := elt.(*ast.KeyValueExpr)
 				if keyVal.Key.(*ast.Ident).Name == "ServerType" {
-					pluginName = strings.Trim(keyVal.Value.(*ast.BasicLit).Value, "\"") + "." + pluginName
+					stname, err := staticEval(fset, call, keyVal.Value)
+					if err != nil {
+						log.Println("ERROR(2):", err)
+					}
+					pluginName = stname + "." + pluginName
 				}
 			}
 			info.Name = pluginName
@@ -87,8 +91,11 @@ var pluginTypes = []PluginType{
 			if len(call.CallExpr.Args) < 1 {
 				return info, fmt.Errorf("TODO: not enough arguments...")
 			}
-			pluginName := strings.Trim(call.CallExpr.Args[0].(*ast.BasicLit).Value, "\"")
-			info.Name = pluginName
+			pname, err := staticEval(fset, call, call.CallExpr.Args[0])
+			if err != nil {
+				log.Println("ERROR:", err)
+			}
+			info.Name = pname
 			return info, nil
 		},
 	},
@@ -103,8 +110,11 @@ var pluginTypes = []PluginType{
 			if len(call.CallExpr.Args) < 1 {
 				return info, fmt.Errorf("TODO: not enough arguments...")
 			}
-			pluginName := strings.Trim(call.CallExpr.Args[0].(*ast.BasicLit).Value, "\"")
-			info.Name = "tls.dns." + pluginName
+			pname, err := staticEval(fset, call, call.CallExpr.Args[0])
+			if err != nil {
+				log.Println("ERROR:", err)
+			}
+			info.Name = "tls.dns." + pname
 			return info, nil
 		},
 	},
