@@ -12,6 +12,7 @@ import (
 // that is supported by this system.
 type PluginType struct {
 	ID            string // lower-case, underscore_spaces
+	Name          string // singular, human-readable name for this plugin type
 	CategoryTitle string // human-readable title for plugin listings
 	Description   string // concise description of what these plugins are/do
 
@@ -31,6 +32,7 @@ type PluginType struct {
 var pluginTypes = []PluginType{
 	{
 		ID:            "server_type",
+		Name:          "Server Type",
 		CategoryTitle: "Server Types",
 		Description:   "Things Caddy can serve",
 		Package:       "caddy",
@@ -51,6 +53,7 @@ var pluginTypes = []PluginType{
 	},
 	{
 		ID:            "generic",
+		Name:          "Directive",
 		CategoryTitle: "Directives/Middleware",
 		Description:   "Extra functionality with the Caddyfile",
 		Package:       "caddy",
@@ -82,6 +85,7 @@ var pluginTypes = []PluginType{
 	},
 	{
 		ID:            "caddyfile_loader",
+		Name:          "Caddyfile Loader",
 		CategoryTitle: "Caddyfile Loaders",
 		Description:   "Ways to load the Caddyfile",
 		Package:       "caddy",
@@ -101,6 +105,7 @@ var pluginTypes = []PluginType{
 	},
 	{
 		ID:            "tls_dns_provider",
+		Name:          "DNS Provider",
 		CategoryTitle: "DNS Providers",
 		Description:   "Obtain certificates using DNS",
 		Package:       "caddytls",

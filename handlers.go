@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"html/template"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/boltdb/bolt"
@@ -93,21 +96,28 @@ func logout(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func getRepoPlugins(w http.ResponseWriter, r *http.Request) {
+func listPlugins(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	repo := strings.TrimSpace(r.Form.Get("repo"))
-	branch := strings.TrimSpace(r.Form.Get("branch"))
-	if repo == "" {
+	repo := strings.TrimSpace(r.Form.Get("clone_url"))
+	pkg := strings.TrimSpace(r.Form.Get("import_path"))
+	version := strings.TrimSpace(r.Form.Get("version"))
+	subfolder := strings.TrimSpace(r.Form.Get("subfolder"))
+	if repo == "" || pkg == "" {
 		http.Error(w, "Missing required field(s)", http.StatusBadRequest)
 		return
 	}
 
-	infos, err := allPluginInfos(repo, branch, true)
+	// assume root of repository if no subfolder given
+	if subfolder == "" {
+		subfolder = "."
+	}
+
+	infos, err := allPluginInfos(repo, version, subfolder, true)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -280,13 +290,15 @@ func loginPage(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "/Users/matt/Sites/newcaddy/account/login.html")
 }
 
-func accountPage(w http.ResponseWriter, r *http.Request) {
-	acc := r.Context().Value(CtxKey("account")).(AccountInfo)
-	renderTemplate(w, "/Users/matt/Sites/newcaddy/account/dashboard.html", acc)
-}
+func templatedPage(w http.ResponseWriter, r *http.Request) {
+	root := "/Users/matt/Sites/newcaddy"
+	ctx := &TemplateContext{
+		root:    root,
+		Req:     r,
+		Account: r.Context().Value(CtxKey("account")).(AccountInfo),
+	}
 
-func renderTemplate(w http.ResponseWriter, file string, ctx interface{}) {
-	tmpl, err := template.ParseFiles(file)
+	tmpl, err := template.ParseFiles(filepath.Join(root, r.URL.Path))
 	if err != nil {
 		log.Printf("template parsing: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -365,6 +377,46 @@ func getLoggedInAccount(r *http.Request) (AccountInfo, error) {
 		return acc, fmt.Errorf("checking login: could not load account with ID '%s': %v", acctID, err)
 	}
 	return acc, nil
+}
+
+type TemplateContext struct {
+	root    string
+	Req     *http.Request
+	Account AccountInfo
+	Args    []interface{}
+}
+
+func (c *TemplateContext) Include(filename string, args ...interface{}) (string, error) {
+	file, err := os.Open(filepath.Join(c.root, filename))
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	body, err := ioutil.ReadAll(file)
+	if err != nil {
+		return "", err
+	}
+
+	tpl, err := template.New(filename).Parse(string(body))
+	if err != nil {
+		return "", err
+	}
+
+	c.Args = args
+
+	var buf bytes.Buffer
+	err = tpl.Execute(&buf, c)
+	if err != nil {
+		return "", err
+	}
+
+	return buf.String(), nil
+}
+
+func (c *TemplateContext) OwnedPlugins() []PluginInfo {
+	// TODO...
+	return nil
 }
 
 var cookies = sessions.NewCookieStore(

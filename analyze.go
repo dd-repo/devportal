@@ -21,7 +21,7 @@ import (
 var clonedRepos = make(map[string]string) // map of clone URL+branch to tmp dir
 var clonedReposMu sync.Mutex
 
-const clonedRepoCacheExpiry = 0 // TODO: 10 * time.Minute
+const clonedRepoCacheExpiry = 10 * time.Minute
 
 func init() {
 	// clean up temporary folders when closed
@@ -39,43 +39,31 @@ func init() {
 }
 
 // allPluginInfos gets a list of plugin registrations discovered
-// by static analysis in the branch at repo. If allowCache is true,
-// the repo will not be cloned anew if it was recently cloned.
-func allPluginInfos(repo, branch string, allowCache bool) ([]PluginInfo, error) {
+// by static analysis at the given version of repo. If allowCache
+// is true, the repo will not be cloned anew if it was recently
+// cloned. If subfolder is specified, then only the package at
+// that subfolder will be analyzed.
+func allPluginInfos(repo, version, subfolder string, allowCache bool) ([]PluginInfo, error) {
 	var infos []PluginInfo
 
 	// standardize input
-	repo, branch = strings.ToLower(repo), strings.ToLower(branch)
+	repo, version = strings.ToLower(repo), strings.ToLower(version)
 	if !strings.HasPrefix(repo, "https://") {
 		return infos, fmt.Errorf("clone URL must use https://")
 	}
-	if branch == "" {
-		branch = "master"
-	}
 
 	// clone the repo (if needed)
-	tmpdir, cacheKey, err := cloneRepo(allowCache, repo, branch)
+	tmpdir, err := cloneRepo(allowCache, repo, version)
 	if err != nil {
 		return infos, err
 	}
-	defer func(tmpdir string, allowCache bool, cacheKey string) {
-		time.Sleep(clonedRepoCacheExpiry)
-		if allowCache {
-			clonedReposMu.Lock()
-			delete(clonedRepos, cacheKey)
-			clonedReposMu.Unlock()
-		}
-		os.RemoveAll(tmpdir)
-	}(tmpdir, allowCache, cacheKey)
 
 	fset := token.NewFileSet()
 
-	// get a list of all the packages in the repo
+	// get a list of all the packages in the repo or, if
+	// specified, the specific subfolder only
 	var pkgs []*ast.Package
-	filepath.Walk(tmpdir, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() {
-			return nil
-		}
+	addPkg := func(path string) error {
 		dirpkgs, err := parser.ParseDir(fset, path, nil, 0)
 		if err != nil {
 			return err
@@ -84,7 +72,20 @@ func allPluginInfos(repo, branch string, allowCache bool) ([]PluginInfo, error) 
 			pkgs = append(pkgs, pkg)
 		}
 		return nil
-	})
+	}
+	if subfolder != "" {
+		err = addPkg(filepath.Join(tmpdir, subfolder))
+	} else {
+		err = filepath.Walk(tmpdir, func(path string, info os.FileInfo, err error) error {
+			if !info.IsDir() {
+				return nil
+			}
+			return addPkg(path)
+		})
+	}
+	if err != nil {
+		return infos, err
+	}
 
 	// find all function calls
 	allFnCalls := findFunctions(pkgs, fset)
@@ -157,7 +158,6 @@ func filterPluginRegistrations(pluginType PluginType, allCalls []PluginCallExpr)
 	for _, callexpr := range allCalls {
 		if selexpr, ok := callexpr.CallExpr.Fun.(*ast.SelectorExpr); ok {
 			if x, ok := selexpr.X.(*ast.Ident); ok {
-				// TODO: Try x.Obj.Data.(*types.Package).Name for more package info...
 				if x.Name == pluginType.Package && selexpr.Sel.Name == pluginType.Function {
 					callexpr.PluginType = pluginType
 					calls = append(calls, callexpr)
@@ -170,17 +170,18 @@ func filterPluginRegistrations(pluginType PluginType, allCalls []PluginCallExpr)
 
 // cloneRepo clones branch from repo into a temporary
 // directory. If allowCache is true, it will not do a
-// new clone if the repo+branch is already in the cache.
+// new clone if the repo@version is already in the cache.
 // This function creates a temporary directory that
 // must be cleaned up by the caller! And if allowCache
-// is true, then the caller must delete the entry
-// from the cache, clonedRepos when the temporary
-// directory is deleted.
+// is false, then the caller must delete the temporary
+// folder when done. If allowCache is true, the temporary
+// folder will be cleaned up automatically when it
+// expires from the cache.
 //
-// The return values are the temporary directory,
-// the key for the cache map, and an error.
-func cloneRepo(allowCache bool, repo, branch string) (string, string, error) {
-	cacheKey := repo + branch
+// The return values are the temporary directory path
+// and an error, if any.
+func cloneRepo(allowCache bool, repo, version string) (string, error) {
+	cacheKey := repo + "@" + version
 
 	clonedReposMu.Lock()
 	tmpdir, ok := clonedRepos[cacheKey]
@@ -190,26 +191,45 @@ func cloneRepo(allowCache bool, repo, branch string) (string, string, error) {
 		var err error
 		tmpdir, err = ioutil.TempDir("", "caddy_plugin_")
 		if err != nil {
-			return tmpdir, cacheKey, err
+			return tmpdir, err
 		}
 
-		cmd := exec.Command("git", "clone", "-b", branch, "--depth=1", repo, tmpdir)
+		cmd := exec.Command("git", "clone", "--depth=1", repo, tmpdir)
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 		cmd.Stdout = os.Stdout // TODO: Probably not needed
 		cmd.Stderr = os.Stderr // TODO: Use log
 		err = cmd.Run()
 		if err != nil {
-			return tmpdir, cacheKey, err
+			return tmpdir, err
+		}
+
+		if version != "" {
+			cmd := exec.Command("git", "checkout", version)
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+			cmd.Stdout = os.Stdout // TODO: Probably not needed
+			cmd.Stderr = os.Stderr // TODO: Use log
+			cmd.Dir = tmpdir
+			err = cmd.Run()
+			if err != nil {
+				return tmpdir, err
+			}
 		}
 
 		if allowCache {
 			clonedReposMu.Lock()
 			clonedRepos[cacheKey] = tmpdir
 			clonedReposMu.Unlock()
+			go func(tmpdir string, cacheKey string) {
+				time.Sleep(clonedRepoCacheExpiry)
+				clonedReposMu.Lock()
+				delete(clonedRepos, cacheKey)
+				clonedReposMu.Unlock()
+				os.RemoveAll(tmpdir)
+			}(tmpdir, cacheKey)
 		}
 	}
 
-	return tmpdir, cacheKey, nil
+	return tmpdir, nil
 }
 
 // PluginCallExpr encapsulates some information about a function

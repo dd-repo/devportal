@@ -34,11 +34,12 @@ func Serve(addr, dbFile string) error {
 	addRoute("POST", "/api/login", login)
 	addRoute("POST", "/api/logout", logout)
 	addRoute("POST", "/api/register-account", registerAccount)
-	addRoute("POST", "/api/register-plugin", registerPlugin)
 	addRoute("POST", "/api/confirm-account", confirmAccount)
-	addRoute("POST", "/api/repo-plugins", authHandler(getRepoPlugins, unauthAPI))
+	addRoute("POST", "/api/repo-plugins", authHandler(listPlugins, unauthAPI))
+	addRoute("POST", "/api/register-plugin", authHandler(registerPlugin, unauthAPI))
 	addRoute("GET", "/account/login.html", loginPage)
-	addRoute("GET", "/account/dashboard.html", authHandler(accountPage, unauthPage))
+	addRoute("GET", "/account/dashboard.html", authHandler(templatedPage, unauthPage))
+	addRoute("GET", "/account/register-plugin.html", authHandler(templatedPage, unauthPage))
 
 	// protect against large requests
 	maxBytesHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -58,12 +59,12 @@ func Serve(addr, dbFile string) error {
 // createPassword salts and hashes the plaintext password, returning
 // the hashed password and its salt if there was no error.
 func createPassword(plaintext string) ([]byte, []byte, error) {
-	salt := make([]byte, PasswordSaltBytes)
+	salt := make([]byte, passwordSaltBytes)
 	_, err := io.ReadFull(rand.Reader, salt)
 	if err != nil {
 		return nil, nil, err
 	}
-	hash, err := scrypt.Key([]byte(plaintext), salt, 1<<14, 8, 1, PasswordHashBytes)
+	hash, err := hashPassword(plaintext, salt)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -74,7 +75,7 @@ func createPassword(plaintext string) ([]byte, []byte, error) {
 // the hashed password with the provided salt. A nil error indicates
 // a match.
 func assertPasswordsMatch(plaintext string, hashed, salt []byte) error {
-	hash, err := scrypt.Key([]byte(plaintext), salt, 1<<14, 8, 1, PasswordHashBytes)
+	hash, err := hashPassword(plaintext, salt)
 	if err != nil {
 		return err
 	}
@@ -82,6 +83,12 @@ func assertPasswordsMatch(plaintext string, hashed, salt []byte) error {
 		return nil
 	}
 	return errors.New("incorrect password")
+}
+
+// hashPassword hashes plaintext with salt using a secure, slow
+// hashing algorithm.
+func hashPassword(plaintext string, salt []byte) ([]byte, error) {
+	return scrypt.Key([]byte(plaintext), salt, 1<<14, 8, 1, passwordHashBytes)
 }
 
 // randString returns a string of n random characters.
@@ -92,7 +99,7 @@ func randString(n int) string {
 	if n <= 0 {
 		return ""
 	}
-	dict := []byte("abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXY3456789")
+	dict := []byte("abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRTUVWXY23456789")
 	b := make([]byte, n)
 	for i := range b {
 		b[i] = dict[mathrand.Int63()%int64(len(dict))]
@@ -101,13 +108,13 @@ func randString(n int) string {
 }
 
 const (
-	PasswordSaltBytes = 32
-	PasswordHashBytes = 64
-
 	MinPasswordLength = 12
 
 	MaxBodyBytes         = 1 * 1024 * 1024
 	MaxQueryStringLength = 128 * 1024
+
+	passwordSaltBytes = 32
+	passwordHashBytes = 64
 )
 
 var (
