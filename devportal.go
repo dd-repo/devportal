@@ -3,6 +3,7 @@ package devportal
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"io"
 	mathrand "math/rand"
@@ -20,6 +21,7 @@ func init() {
 	mathrand.Seed(time.Now().UnixNano())
 }
 
+// Serve begins the developer portal listening.
 func Serve(addr, dbFile string) error {
 	var err error
 	db, err = openDB(dbFile)
@@ -31,15 +33,21 @@ func Serve(addr, dbFile string) error {
 	addRoute := func(method, path string, h http.HandlerFunc) {
 		router.Handle(path, handlers.MethodHandler{method: h})
 	}
+	addRoute("GET", "/api/download-page", populateDownloadPage)
 	addRoute("POST", "/api/login", login)
 	addRoute("POST", "/api/logout", logout)
 	addRoute("POST", "/api/register-account", registerAccount)
 	addRoute("POST", "/api/confirm-account", confirmAccount)
 	addRoute("POST", "/api/repo-plugins", authHandler(listPlugins, unauthAPI))
 	addRoute("POST", "/api/register-plugin", authHandler(registerPlugin, unauthAPI))
+	addRoute("POST", "/api/deploy-caddy", authHandler(deployCaddyHandler, unauthAPI))
+	addRoute("POST", "/api/deploy-plugin", authHandler(deployPluginHandler, unauthAPI))
+	addRoute("POST", "/webhook/github/{accountID}", githubWebhook)
 	addRoute("GET", "/account/login.html", loginPage)
 	addRoute("GET", "/account/dashboard.html", authHandler(templatedPage, unauthPage))
 	addRoute("GET", "/account/register-plugin.html", authHandler(templatedPage, unauthPage))
+	addRoute("GET", "/download/{os}/{arch}", downloadHandler)
+	addRoute("GET", "/download/{os}/{arch}/signature", signatureHandler)
 
 	// protect against large requests
 	maxBytesHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +77,17 @@ func createPassword(plaintext string) ([]byte, []byte, error) {
 		return nil, nil, err
 	}
 	return hash, salt, nil
+}
+
+// assertAPIKeysMatch carefully asserts that encodedKey (encoded)
+// matches rawKey (raw bytes). A nil error indicates a match.
+func assertAPIKeysMatch(encodedKey string, rawKey []byte) error {
+	rawKeyEncoded := make([]byte, hex.EncodedLen(len(rawKey)))
+	hex.Encode(rawKeyEncoded, rawKey)
+	if subtle.ConstantTimeCompare([]byte(encodedKey), rawKeyEncoded) == 1 {
+		return nil
+	}
+	return errors.New("incorrect API key")
 }
 
 // assertPasswordsMatch asserts that the plaintext password matches
@@ -108,9 +127,15 @@ func randString(n int) string {
 }
 
 const (
+	// MinPasswordLength is the minimum length of a password.
 	MinPasswordLength = 12
 
-	MaxBodyBytes         = 1 * 1024 * 1024
+	// MaxBodyBytes is the maximum number of bytes a
+	// request body may have.
+	MaxBodyBytes = 1 * 1024 * 1024
+
+	// MaxQueryStringLength is the maximum allowed size
+	// of a query string.
 	MaxQueryStringLength = 128 * 1024
 
 	passwordSaltBytes = 32

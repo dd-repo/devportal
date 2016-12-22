@@ -16,15 +16,16 @@ type PluginType struct {
 	CategoryTitle string // human-readable title for plugin listings
 	Description   string // concise description of what these plugins are/do
 
-	// Name of package and function, as in a function call: "package.Func()"
+	// Name of package and function, as in a function call: "package.Function()"
 	Package  string
 	Function string
 
 	// GetInfo takes a function call and is able to extract
-	// the relevant information from it into a PluginInfo.
-	// However, GetInfo is not able to label the PluginInfo
+	// the relevant information from it into a Plugin.
+	// However, GetInfo is not able to label the Plugin
 	// with the type of plugin this is (initialization loop).
-	GetInfo func(*token.FileSet, PluginCallExpr) (PluginInfo, error) `json:"-"`
+	// The caller should do that.
+	GetInfo func(*token.FileSet, PluginCallExpr) (Plugin, error) `json:"-"`
 }
 
 // pluginTypes is the list of plugin types that are
@@ -37,17 +38,17 @@ var pluginTypes = []PluginType{
 		Description:   "Things Caddy can serve",
 		Package:       "caddy",
 		Function:      "RegisterServerType",
-		GetInfo: func(fset *token.FileSet, call PluginCallExpr) (PluginInfo, error) {
-			var info PluginInfo
+		GetInfo: func(fset *token.FileSet, call PluginCallExpr) (Plugin, error) {
+			var info Plugin
 			if len(call.CallExpr.Args) < 1 {
-				return info, fmt.Errorf("TODO: not enough arguments...")
+				return info, fmt.Errorf("not enough arguments")
 			}
 			pname, err := staticEval(fset, call, call.CallExpr.Args[0])
 			if err != nil {
 				log.Println("ERROR:", err)
 			}
 			pluginName := pname
-			info.Name = pluginName
+			info.Name = strings.ToLower(pluginName)
 			return info, nil
 		},
 	},
@@ -58,10 +59,10 @@ var pluginTypes = []PluginType{
 		Description:   "Extra functionality with the Caddyfile",
 		Package:       "caddy",
 		Function:      "RegisterPlugin",
-		GetInfo: func(fset *token.FileSet, call PluginCallExpr) (PluginInfo, error) {
-			var info PluginInfo
+		GetInfo: func(fset *token.FileSet, call PluginCallExpr) (Plugin, error) {
+			var info Plugin
 			if len(call.CallExpr.Args) != 2 {
-				return info, fmt.Errorf("TODO: not enough arguments...")
+				return info, fmt.Errorf("not enough arguments")
 			}
 			pname, err := staticEval(fset, call, call.CallExpr.Args[0])
 			if err != nil {
@@ -79,7 +80,7 @@ var pluginTypes = []PluginType{
 					pluginName = stname + "." + pluginName
 				}
 			}
-			info.Name = pluginName
+			info.Name = strings.ToLower(pluginName)
 			return info, nil
 		},
 	},
@@ -90,16 +91,16 @@ var pluginTypes = []PluginType{
 		Description:   "Ways to load the Caddyfile",
 		Package:       "caddy",
 		Function:      "RegisterCaddyfileLoader",
-		GetInfo: func(fset *token.FileSet, call PluginCallExpr) (PluginInfo, error) {
-			var info PluginInfo
+		GetInfo: func(fset *token.FileSet, call PluginCallExpr) (Plugin, error) {
+			var info Plugin
 			if len(call.CallExpr.Args) < 1 {
-				return info, fmt.Errorf("TODO: not enough arguments...")
+				return info, fmt.Errorf("not enough arguments")
 			}
 			pname, err := staticEval(fset, call, call.CallExpr.Args[0])
 			if err != nil {
 				log.Println("ERROR:", err)
 			}
-			info.Name = pname
+			info.Name = strings.ToLower(pname)
 			return info, nil
 		},
 	},
@@ -110,16 +111,16 @@ var pluginTypes = []PluginType{
 		Description:   "Obtain certificates using DNS",
 		Package:       "caddytls",
 		Function:      "RegisterDNSProvider",
-		GetInfo: func(fset *token.FileSet, call PluginCallExpr) (PluginInfo, error) {
-			var info PluginInfo
+		GetInfo: func(fset *token.FileSet, call PluginCallExpr) (Plugin, error) {
+			var info Plugin
 			if len(call.CallExpr.Args) < 1 {
-				return info, fmt.Errorf("TODO: not enough arguments...")
+				return info, fmt.Errorf("not enough arguments")
 			}
 			pname, err := staticEval(fset, call, call.CallExpr.Args[0])
 			if err != nil {
 				log.Println("ERROR:", err)
 			}
-			info.Name = "tls.dns." + pname
+			info.Name = strings.ToLower("tls.dns." + pname)
 			return info, nil
 		},
 	},

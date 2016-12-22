@@ -34,7 +34,7 @@ func init() {
 		for _, tmpdir := range clonedRepos {
 			os.RemoveAll(tmpdir)
 		}
-		os.Exit(1)
+		os.Exit(0)
 	}()
 }
 
@@ -43,8 +43,8 @@ func init() {
 // is true, the repo will not be cloned anew if it was recently
 // cloned. If subfolder is specified, then only the package at
 // that subfolder will be analyzed.
-func allPluginInfos(repo, version, subfolder string, allowCache bool) ([]PluginInfo, error) {
-	var infos []PluginInfo
+func allPluginInfos(repo, version, subfolder string, allowCache bool) ([]Plugin, error) {
+	var infos []Plugin
 
 	// standardize input
 	repo, version = strings.ToLower(repo), strings.ToLower(version)
@@ -215,18 +215,18 @@ func cloneRepo(allowCache bool, repo, version string) (string, error) {
 			}
 		}
 
-		if allowCache {
+		// cache this repo for near-future use
+		clonedReposMu.Lock()
+		clonedRepos[cacheKey] = tmpdir
+		clonedReposMu.Unlock()
+		go func(tmpdir string, cacheKey string) {
+			// wait a while, then delete this cached repo
+			time.Sleep(clonedRepoCacheExpiry)
 			clonedReposMu.Lock()
-			clonedRepos[cacheKey] = tmpdir
+			delete(clonedRepos, cacheKey)
 			clonedReposMu.Unlock()
-			go func(tmpdir string, cacheKey string) {
-				time.Sleep(clonedRepoCacheExpiry)
-				clonedReposMu.Lock()
-				delete(clonedRepos, cacheKey)
-				clonedReposMu.Unlock()
-				os.RemoveAll(tmpdir)
-			}(tmpdir, cacheKey)
-		}
+			os.RemoveAll(tmpdir)
+		}(tmpdir, cacheKey)
 	}
 
 	return tmpdir, nil
