@@ -45,13 +45,11 @@ func deployCaddyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := http.NewRequest("POST", "http://localhost:2017/deploy-caddy", bytes.NewReader(body))
+	req, err := newBuildWorkerRequest("POST", "/deploy-caddy", bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.SetBasicAuth("dev", "happypass123") // TODO: get from environment
 
 	go func() {
 		resp, err := http.DefaultClient.Do(req)
@@ -140,11 +138,10 @@ var (
 // updateSupportedPlatforms gets the latest supported platforms
 // from the upstream build worker and updates the list cached here.
 func updateSupportedPlatforms() error {
-	req, err := http.NewRequest("GET", "http://127.0.0.1:2017/supported-platforms", nil)
+	req, err := newBuildWorkerRequest("GET", "/supported-platforms", nil)
 	if err != nil {
 		return err
 	}
-	req.SetBasicAuth("dev", "happypass123")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -179,7 +176,12 @@ func populateDownloadPage(w http.ResponseWriter, r *http.Request) {
 	lastUpdate := supportedPlatformsLastUpdate
 	supportedPlatformsMu.RUnlock()
 	if time.Since(lastUpdate) > 1*time.Hour {
-		updateSupportedPlatforms()
+		err := updateSupportedPlatforms()
+		if err != nil {
+			log.Printf("download-page: updating supported platforms: %v", err)
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
 	}
 	supportedPlatformsMu.RLock()
 	dlinfo := DownloadPageInfo{Platforms: supportedPlatforms}

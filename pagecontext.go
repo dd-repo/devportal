@@ -2,12 +2,12 @@ package devportal
 
 import (
 	"bytes"
-	"html/template"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"text/template"
 
 	"github.com/gorilla/securecookie"
 	"github.com/gorilla/sessions"

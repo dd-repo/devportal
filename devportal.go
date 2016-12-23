@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	mathrand "math/rand"
 	"net/http"
@@ -63,6 +64,11 @@ func Serve(addr, dbFile string) error {
 		r.Body = http.MaxBytesReader(w, r.Body, MaxBodyBytes)
 		router.ServeHTTP(w, r)
 	})
+
+	err = cachedBuildsMaintenance()
+	if err != nil {
+		return fmt.Errorf("maintaining build cache: %v", err)
+	}
 
 	// TODO: A middleware to log requests and give them an ID, I guess
 

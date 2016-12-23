@@ -40,6 +40,18 @@ var requiredPlatforms = []buildworker.Platform{
 	{OS: "windows", Arch: "amd64"},
 }
 
+func newBuildWorkerRequest(method, endpoint string, jsonBody io.Reader) (*http.Request, error) {
+	req, err := http.NewRequest(method, BuildWorkerUpstream+endpoint, jsonBody)
+	if err != nil {
+		return nil, err
+	}
+	if jsonBody != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.SetBasicAuth(BuildWorkerClientID, BuildWorkerClientKey)
+	return req, nil
+}
+
 func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 	now := time.Now().UTC()
 
@@ -61,14 +73,14 @@ func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 	}
 
 	// prepare our request
-	req, err := http.NewRequest("POST", "http://localhost:2017/deploy-plugin", bytes.NewReader(j))
+	req, err := newBuildWorkerRequest("POST", "/deploy-plugin", bytes.NewReader(j))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.SetBasicAuth("dev", "happypass123") // TODO: get from environment
 
 	go func() {
+		// TODO: On any failure here, notify account...
+
 		// send blocking request upstream to build worker
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -84,9 +96,6 @@ func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 				log.Printf("failed to read response body: %v", err)
 			}
 			log.Printf("plugin deploy failed: HTTP %d: %s", resp.StatusCode, bytes.TrimSpace(bodyText))
-
-			// TODO: notify account that requested the deploy of the failure
-
 			return
 		}
 
@@ -98,6 +107,17 @@ func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 		})
 		if err != nil {
 			log.Printf("plugin deploy succeeded but failed to save: %v", err)
+			return
+		}
+
+		// evict cached builds with this plugin; not really necessary except
+		// if the plugin is deployed at a branch, since the cache key won't
+		// be different, since branch names don't change while the ref does.
+		// to avoid serving stale content, we just purge these cached builds.
+		err = evictBuildsFromCache(pluginID)
+		if err != nil {
+			log.Printf("evicting affected builds from cache: %v", err)
+			return
 		}
 
 		// TODO: Notify account of success
@@ -270,16 +290,13 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	fmt.Println("BUILD REQUEST:", string(brBytes))
 
-	req, err := http.NewRequest("POST", "http://localhost:2017/build", bytes.NewReader(brBytes))
+	req, err := newBuildWorkerRequest("POST", "/build", bytes.NewReader(brBytes))
 	if err != nil {
 		log.Printf("error creating upstream request: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.SetBasicAuth("dev", "happypass123") // TODO: get from environment
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -328,7 +345,7 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 		Config:    br,
 		Timestamp: now,
 		CacheKey:  cacheKey,
-		Dir:       filepath.Join(cacheDir, cacheKey),
+		Dir:       filepath.Join(BuildCacheDir, cacheKey),
 	}
 
 	// read the files from the build worker
@@ -380,7 +397,7 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 // file download. For HEAD requests, only the headers are
 // transmitted.
 func sendFileDownload(file string, w http.ResponseWriter, r *http.Request) error {
-	//w.Header().Set("Expires", b.Expires.Format(http.TimeFormat)) // TODO - cache invalidation/expiry
+	//w.Header().Set("Expires", b.Expires.Format(http.TimeFormat)) // TODO - cache invalidation/expiry?
 
 	if r.Method == "HEAD" {
 		w.Header().Set("Location", r.URL.String())
@@ -424,8 +441,6 @@ func buildCacheKey(br buildworker.BuildRequest) string {
 		keyStr += fmt.Sprintf(" %s@%s", plugin.ID, plugin.Version)
 	}
 
-	fmt.Println(keyStr) // TODO: temp
-
 	// hash the key and return as hex
 	hash := sha1.New()
 	hash.Write([]byte(keyStr))
@@ -439,8 +454,6 @@ type PluginList []buildworker.CaddyPlugin
 func (l PluginList) Len() int           { return len(l) }
 func (l PluginList) Swap(i, j int)      { l[i], l[j] = l[j], l[i] }
 func (l PluginList) Less(i, j int) bool { return l[i].Package < l[j].Package }
-
-const cacheDir = "cache"
 
 func saveFile(p *multipart.Part, filePath string) error {
 	// ensure directory exists
@@ -474,3 +487,31 @@ type BuildError struct {
 	Message string
 	Log     string
 }
+
+// MaxCachedBuilds is the maximum number of builds to cache.
+// Minimum effective value is 1. High values are strongly
+// recommended for production use.
+var MaxCachedBuilds = 1000
+
+// BuildCacheDir is the directory in which to store cached builds.
+// Note that this value is used to store the locations of cached
+// builds in the database also; changing this value does not update
+// the values stored in the database. In other words, a previous
+// cache directory would still be accessed when using previously-
+// cached builds. So, don't delete old cache directories unless
+// the database has been updated by deleting those cached builds.
+var BuildCacheDir = "./cache"
+
+// Variables that configure access to the build worker upstream.
+var (
+	// BuildWorkerUpstream is the base URL to the upstream build worker.
+	// It should include a scheme, host, and port (if non-standard)
+	// and no path (no trailing slash).
+	BuildWorkerUpstream = "http://localhost:2017"
+
+	// BuildWorkerClientID is the username/ID for the build worker.
+	BuildWorkerClientID string
+
+	// BuildWorkerClientKey is the password/key for the build worker.
+	BuildWorkerClientKey string
+)

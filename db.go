@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"math/rand"
+	"os"
 	"strings"
 
 	"github.com/boltdb/bolt"
@@ -64,8 +66,70 @@ func saveAccount(acc AccountInfo) error {
 }
 
 // saveCachedBuild saves cb to the database.
+// If the cache is full, it deletes a random
+// cached build.
 func saveCachedBuild(cb CachedBuild) error {
+	err := cachedBuildsMaintenance()
+	if err != nil {
+		return err
+	}
 	return saveToDB("cachedBuilds", cb.CacheKey, cb)
+}
+
+// cachedBuildsMaintenance deletes 'random' cached builds.
+// It chooses a random key to delete, then deletes it and
+// as many subsequent keys as needed to get the number of
+// cached builds within the maximum.
+func cachedBuildsMaintenance() error {
+	var shortStraws []CachedBuild
+
+	err := db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("cachedBuilds"))
+		numCachedBuilds := b.Stats().KeyN
+		excessBuilds := numCachedBuilds - MaxCachedBuilds
+		if excessBuilds > 0 {
+			randomIndex := rand.Intn(numCachedBuilds - excessBuilds + 1)
+			c := b.Cursor()
+			i := 0
+			for k, v := c.First(); k != nil; k, v = c.Next() {
+				if i >= randomIndex {
+					var shortStraw CachedBuild
+					err := gobDecode(v, &shortStraw)
+					if err != nil {
+						return err
+					}
+					shortStraws = append(shortStraws, shortStraw)
+					if len(shortStraws) >= excessBuilds {
+						break
+					}
+				}
+				i++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, shortStraw := range shortStraws {
+		err := deleteCachedBuild(shortStraw)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteCachedBuild deletes cb from disk and the database.
+func deleteCachedBuild(cb CachedBuild) error {
+	return db.Update(func(tx *bolt.Tx) error {
+		err := os.RemoveAll(cb.Dir)
+		if err != nil {
+			return err
+		}
+		b := tx.Bucket([]byte("cachedBuilds"))
+		return b.Delete([]byte(cb.CacheKey))
+	})
 }
 
 // saveCaddyRelease saves this Caddy release rel to the DB.
@@ -144,6 +208,52 @@ func loadCachedBuild(cacheKey string) (CachedBuild, bool, error) {
 		return cb, false, err
 	}
 	return cb, cb.CacheKey == cacheKey, nil
+}
+
+// evictBuildsFromCache will delete all cached builds that have
+// the plugin given by pluginID. This is really not necessary,
+// since the cache size is kept under control independently, except
+// that releases on branch names, which don't change even
+// though refs they point to do change between deploys.
+// In other words, cache keys may be the same because it's not a
+// specific commit or tag; it's just "whatever commit this branch
+// is on at the time of this deploy".
+func evictBuildsFromCache(pluginID string) error {
+	var cachedBuildsToDelete []CachedBuild
+	err := db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket([]byte("cachedBuilds")).Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var cb CachedBuild
+			err := gobDecode(v, &cb)
+			if err != nil {
+				return err
+			}
+			for _, plugin := range cb.Config.Plugins {
+				if plugin.ID == pluginID {
+					cachedBuildsToDelete = append(cachedBuildsToDelete, cb)
+					break
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("cachedBuilds"))
+		for _, cb := range cachedBuildsToDelete {
+			err := os.RemoveAll(cb.Dir)
+			if err != nil {
+				return err
+			}
+			err = b.Delete([]byte(cb.CacheKey))
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // loadPluginByName loads the plugin by pluginName.
