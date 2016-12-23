@@ -8,6 +8,7 @@ import (
 	"io"
 	mathrand "math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/scrypt"
@@ -30,8 +31,12 @@ func Serve(addr, dbFile string) error {
 	}
 	defer db.Close()
 
-	addRoute := func(method, path string, h http.HandlerFunc) {
-		router.Handle(path, handlers.MethodHandler{method: h})
+	addRoute := func(methods, path string, h http.HandlerFunc) {
+		methodHandler := make(handlers.MethodHandler)
+		for _, method := range strings.Split(methods, ",") {
+			methodHandler[method] = h
+		}
+		router.Handle(path, methodHandler)
 	}
 	addRoute("GET", "/api/download-page", populateDownloadPage)
 	addRoute("POST", "/api/login", login)
@@ -46,8 +51,8 @@ func Serve(addr, dbFile string) error {
 	addRoute("GET", "/account/login.html", loginPage)
 	addRoute("GET", "/account/dashboard.html", authHandler(templatedPage, unauthPage))
 	addRoute("GET", "/account/register-plugin.html", authHandler(templatedPage, unauthPage))
-	addRoute("GET", "/download/{os}/{arch}", downloadHandler)
-	addRoute("GET", "/download/{os}/{arch}/signature", signatureHandler)
+	addRoute("GET,HEAD", "/download/{os}/{arch}", downloadHandler)
+	addRoute("GET,HEAD", "/download/{os}/{arch}/signature", signatureHandler)
 
 	// protect against large requests
 	maxBytesHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

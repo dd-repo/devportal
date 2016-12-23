@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/caddyserver/buildworker"
@@ -106,6 +107,17 @@ func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 }
 
 func downloadHandler(w http.ResponseWriter, r *http.Request) {
+	produceDownload("archive", w, r)
+}
+
+func signatureHandler(w http.ResponseWriter, r *http.Request) {
+	produceDownload("signature", w, r)
+}
+
+func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Access-Control-Allow-Origin", "*")
+	w.Header().Add("Access-Control-Expose-Headers", "Location")
+
 	now := time.Now().UTC()
 
 	vars := mux.Vars(r)
@@ -117,7 +129,33 @@ func downloadHandler(w http.ResponseWriter, r *http.Request) {
 		arch = arch[:3]
 	}
 
-	// TODO: check that we support the platform
+	// check that the platform is supported
+	supportedPlatformsMu.RLock()
+	numPlats := len(supportedPlatforms)
+	supportedPlatformsMu.RUnlock()
+	if numPlats == 0 {
+		// make sure we get the list first
+		err := updateSupportedPlatforms()
+		if err != nil {
+			log.Printf("error checking supported platforms: %v", err)
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
+	supportedPlatformsMu.RLock()
+	var supported bool
+	for _, plat := range supportedPlatforms {
+		if os == plat.OS && arch == plat.Arch && arm == plat.ARM {
+			supported = true
+			break
+		}
+	}
+	supportedPlatformsMu.RUnlock()
+	if !supported {
+		log.Printf("platform not supported: GOOS=%s GOARCH=%s GOARM=%s", os, arch, arm)
+		http.Error(w, "platform not supported", http.StatusBadRequest)
+		return
+	}
 
 	pluginsQuery := strings.ToLower(r.URL.Query().Get("plugins"))
 	pluginNames := strings.Split(pluginsQuery, ",")
@@ -177,26 +215,51 @@ func downloadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sendDownload := func(cb CachedBuild) {
-		err := sendFileDownload(filepath.Join(cb.Dir, cb.ArchiveFilename), w)
+		dlFile := cb.ArchiveFilename
+		if ofWhat == "signature" {
+			dlFile = cb.SignatureFilename
+		}
+		err := sendFileDownload(filepath.Join(cb.Dir, dlFile), w, r)
 		if err != nil {
 			log.Println(err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
 	}
 
-	// see if this build is cached
+	// see if this build is cached; if so, use it
 	cacheKey := buildCacheKey(br)
-	cb, ok, err := loadCachedBuild(cacheKey)
+	cb, cached, err := loadCachedBuild(cacheKey)
 	if err != nil {
 		log.Printf("error checking cache: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
-	if ok {
-		// build is cached! use it.
+	if cached {
 		sendDownload(cb)
 		return
+	}
+
+	// see if anyone else has already requested a
+	// build and is waiting; if so, get in line
+	pendingDownloadsMu.Lock()
+	waitChan, isPending := pendingDownloads[cacheKey]
+	if isPending {
+		pendingDownloadsMu.Unlock()
+		<-waitChan
+		cb, cached, err := loadCachedBuild(cacheKey)
+		if err != nil {
+			log.Printf("error checking cache: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if cached {
+			sendDownload(cb)
+			return
+		}
+	} else {
+		waitChan = make(chan struct{})
+		pendingDownloads[cacheKey] = waitChan
+		pendingDownloadsMu.Unlock()
 	}
 
 	// otherwise, request a build and cache it for later
@@ -304,13 +367,27 @@ func downloadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	pendingDownloadsMu.Lock()
+	delete(pendingDownloads, cacheKey)
+	pendingDownloadsMu.Unlock()
+	close(waitChan)
+
 	sendDownload(cb)
 }
 
 // sendFileDownload sends a file down the pipe to w with a
 // Content-Disposition such that the client will invoke a
-// file download.
-func sendFileDownload(file string, w http.ResponseWriter) error {
+// file download. For HEAD requests, only the headers are
+// transmitted.
+func sendFileDownload(file string, w http.ResponseWriter, r *http.Request) error {
+	//w.Header().Set("Expires", b.Expires.Format(http.TimeFormat)) // TODO - cache invalidation/expiry
+
+	if r.Method == "HEAD" {
+		w.Header().Set("Location", r.URL.String())
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}
+
 	f, err := os.Open(file)
 	if err != nil {
 		return fmt.Errorf("error loading cached build: %v", err)
@@ -389,10 +466,8 @@ func saveFile(p *multipart.Part, filePath string) error {
 	return nil
 }
 
-func signatureHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("signature handler", mux.Vars(r)["os"], mux.Vars(r)["arch"])
-	// TODO
-}
+var pendingDownloads = make(map[string]chan struct{})
+var pendingDownloadsMu sync.Mutex
 
 // BuildError is an error from an upstream build.
 type BuildError struct {
