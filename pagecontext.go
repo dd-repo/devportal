@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"text/template"
 
+	"github.com/gorilla/mux"
 	"github.com/gorilla/securecookie"
 	"github.com/gorilla/sessions"
 )
@@ -52,8 +53,25 @@ func (c *TemplateContext) Include(filename string, args ...interface{}) (string,
 
 // OwnedPlugins gets a list of plugins owned by the current user.
 func (c *TemplateContext) OwnedPlugins() []Plugin {
-	// TODO...
-	return nil
+	acct := c.Req.Context().Value(CtxKey("account")).(AccountInfo)
+	plugins, err := loadAllPlugins(acct.ID)
+	if err != nil {
+		log.Printf("Error loading plugins owned by %s: %v", acct.ID, err)
+		return nil
+	}
+	return plugins
+}
+
+func (c *TemplateContext) LoadPlugin(id string) (Plugin, error) {
+	return loadPlugin(id)
+}
+
+func (c *TemplateContext) PathVar(name string) string {
+	return mux.Vars(c.Req)[name]
+}
+
+func (c *TemplateContext) Context(key string) interface{} {
+	return c.Req.Context().Value(CtxKey(key))
 }
 
 var cookies = sessions.NewCookieStore(
@@ -63,15 +81,15 @@ var cookies = sessions.NewCookieStore(
 	securecookie.GenerateRandomKey(32),
 )
 
-func templatedPage(w http.ResponseWriter, r *http.Request) {
-	root := "/Users/matt/Sites/newcaddy"
+func renderTemplatedPage(w http.ResponseWriter, r *http.Request, templatePage string) {
+	siteRoot := "/Users/matt/Sites/newcaddy"
 	ctx := &TemplateContext{
-		root:    root,
+		root:    siteRoot,
 		Req:     r,
 		Account: r.Context().Value(CtxKey("account")).(AccountInfo),
 	}
 
-	tmpl, err := template.ParseFiles(filepath.Join(root, r.URL.Path))
+	tmpl, err := template.ParseFiles(filepath.Join(siteRoot, templatePage))
 	if err != nil {
 		log.Printf("template parsing: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -52,6 +52,9 @@ func Serve(addr, dbFile string) error {
 	addRoute("GET", "/account/login.html", loginPage)
 	addRoute("GET", "/account/dashboard.html", authHandler(templatedPage, unauthPage))
 	addRoute("GET", "/account/register-plugin.html", authHandler(templatedPage, unauthPage))
+	addRoute("GET", "/account/plugin/{id}", accountTplPluginOwner("/account/plugin-details.html"))
+	addRoute("GET", "/account/plugin/{id}/edit", accountTplPluginOwner("/account/plugin-edit.html"))
+	addRoute("GET", "/account/plugin/{id}/deploy", accountTplPluginOwner("/account/plugin-deploy.html"))
 	addRoute("GET,HEAD", "/download/{os}/{arch}", downloadHandler)
 	addRoute("GET,HEAD", "/download/{os}/{arch}/signature", signatureHandler)
 

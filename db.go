@@ -149,6 +149,7 @@ func savePluginRelease(pluginID string, rel PluginRelease) error {
 }
 
 // loadLatestCaddyRelease loads the latest Caddy release from the DB.
+// If there is no release, an error is returned.
 func loadLatestCaddyRelease() (CaddyRelease, error) {
 	var rel CaddyRelease
 	err := db.View(func(tx *bolt.Tx) error {
@@ -156,6 +157,9 @@ func loadLatestCaddyRelease() (CaddyRelease, error) {
 		key, _ := bucket.Cursor().Last()
 		return loadFromBucket(&rel, bucket, key)
 	})
+	if rel.Version == "" || rel.Timestamp.IsZero() {
+		return rel, fmt.Errorf("no caddy releases")
+	}
 	return rel, err
 }
 
@@ -168,8 +172,9 @@ func savePlugin(pl Plugin) error {
 	return saveToDBRaw("index:namesToPlugins", []byte(pl.Name), []byte(pl.ID))
 }
 
-// loadAllPlugins loads all the plugins from the database.
-func loadAllPlugins() ([]Plugin, error) {
+// loadAllPlugins loads all the plugins from the database,
+// optionally filtered by ownerID (account ID).
+func loadAllPlugins(ownerID string) ([]Plugin, error) {
 	var plugins []Plugin
 	err := db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("plugins"))
@@ -179,7 +184,9 @@ func loadAllPlugins() ([]Plugin, error) {
 			if err != nil {
 				return err
 			}
-			plugins = append(plugins, pl)
+			if ownerID == "" || pl.OwnerAccountID == ownerID {
+				plugins = append(plugins, pl)
+			}
 			return nil
 		})
 	})
@@ -210,15 +217,24 @@ func loadCachedBuild(cacheKey string) (CachedBuild, bool, error) {
 	return cb, cb.CacheKey == cacheKey, nil
 }
 
-// evictBuildsFromCache will delete all cached builds that have
-// the plugin given by pluginID. This is really not necessary,
-// since the cache size is kept under control independently, except
-// that releases on branch names, which don't change even
-// though refs they point to do change between deploys.
-// In other words, cache keys may be the same because it's not a
-// specific commit or tag; it's just "whatever commit this branch
-// is on at the time of this deploy".
-func evictBuildsFromCache(pluginID string) error {
+// evictBuildsFromCache will delete builds from the cache so as
+// to avoid serving stale content. For example, if a plugin is
+// deployed at a branch, the branch name may not change even
+// though its ref does; thus, the cache key will be the same
+// even though content is different.
+//
+// If you specify a plugin ID and version, all cache entries
+// configured with that plugin at that version will be evicted.
+// If a Caddy version is specified, all cache entries configured
+// with that version of Caddy will be evicted. Only evict for
+// either a plugin or Caddy, not both (it is an error).
+func evictBuildsFromCache(pluginID, pluginVersion, caddyVersion string) error {
+	if (pluginID == "" && pluginVersion != "") || (pluginID != "" && pluginVersion == "") {
+		return fmt.Errorf("to evict by plugin, must have plugin ID and version")
+	}
+	if pluginID != "" && caddyVersion != "" {
+		return fmt.Errorf("cannot evict cache based on both plugin and Caddy versions")
+	}
 	var cachedBuildsToDelete []CachedBuild
 	err := db.View(func(tx *bolt.Tx) error {
 		c := tx.Bucket([]byte("cachedBuilds")).Cursor()
@@ -228,8 +244,14 @@ func evictBuildsFromCache(pluginID string) error {
 			if err != nil {
 				return err
 			}
+			if caddyVersion != "" && cb.Config.CaddyVersion == caddyVersion {
+				// evict based on Caddy version
+				cachedBuildsToDelete = append(cachedBuildsToDelete, cb)
+				continue
+			}
 			for _, plugin := range cb.Config.Plugins {
-				if plugin.ID == pluginID {
+				if plugin.ID == pluginID && plugin.Version == pluginVersion {
+					// evict based on plugin version
 					cachedBuildsToDelete = append(cachedBuildsToDelete, cb)
 					break
 				}
@@ -315,7 +337,7 @@ func loadFromDBRaw(bucket, key string) ([]byte, error) {
 // uniqueID generates a random string that is not yet
 // used as a key in the given bucket.
 func uniqueID(bucket string) (string, error) {
-	const idLen = 16
+	const idLen = 10
 	id := randString(idLen)
 	for i, maxTries := 0, 50; !isUnique(bucket, id) && i < maxTries; i++ {
 		if i == maxTries-1 {

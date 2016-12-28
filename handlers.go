@@ -2,6 +2,7 @@ package devportal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -11,13 +12,57 @@ import (
 	"time"
 
 	"github.com/caddyserver/buildworker"
+	"github.com/gorilla/mux"
 )
+
+func templatedPage(w http.ResponseWriter, r *http.Request) {
+	renderTemplatedPage(w, r, r.URL.Path)
+}
+
+func accountTpl(templateFile string) http.HandlerFunc {
+	return authHandler(func(w http.ResponseWriter, r *http.Request) {
+		renderTemplatedPage(w, r, templateFile)
+	}, unauthPage)
+}
+
+func accountTplPluginOwner(templateFile string) http.HandlerFunc {
+	return authHandler(pluginOwner(func(w http.ResponseWriter, r *http.Request) {
+		renderTemplatedPage(w, r, templateFile)
+	}), unauthPage)
+}
+
+func pluginOwner(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// load the plugin from the path var in the request
+		pluginID := mux.Vars(r)["id"]
+		pl, err := loadPlugin(pluginID)
+		if err != nil {
+			log.Printf("error loading plugin %s: %v", pluginID, err)
+			http.Error(w, "error loading plugin "+pluginID, http.StatusNotFound)
+			return
+		}
+
+		// load the account from the context (should already be authenticated)
+		// to ensure that account is authorized
+		account := r.Context().Value(CtxKey("account")).(AccountInfo)
+		if pl.OwnerAccountID != account.ID {
+			log.Printf("account %s is not authorized to access plugin %s", account.ID, pluginID)
+			http.Error(w, "account not authorized to access plugin "+pluginID, http.StatusForbidden)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), CtxKey("plugin"), pl)
+
+		h.ServeHTTP(w, r.WithContext(ctx))
+	}
+}
 
 func deployCaddyHandler(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 
 	account := r.Context().Value(CtxKey("account")).(AccountInfo)
 	if !account.CaddyMaintainer {
+		log.Printf("account %s tried to deploy Caddy but is not a maintainer", account.ID)
 		http.Error(w, "only maintainers may deploy Caddy", http.StatusForbidden)
 		return
 	}
@@ -25,21 +70,22 @@ func deployCaddyHandler(w http.ResponseWriter, r *http.Request) {
 	type DeployRequest struct {
 		CaddyVersion string `json:"caddy_version"`
 	}
-	var info DeployRequest
-	err := json.NewDecoder(r.Body).Decode(&info)
+	var depreq DeployRequest
+	err := json.NewDecoder(r.Body).Decode(&depreq)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if info.CaddyVersion == "" {
+	if depreq.CaddyVersion == "" {
+		// TODO.
 		// blah blah blah
 	}
 
 	// TODO: is there already a release at this version? if so, reject...?
 	// should that be checked by release-caddy as well?
 
-	body, err := json.Marshal(info)
+	body, err := json.Marshal(depreq)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -64,11 +110,21 @@ func deployCaddyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		err = saveCaddyRelease(CaddyRelease{
 			Timestamp:  now,
-			Version:    info.CaddyVersion,
+			Version:    depreq.CaddyVersion,
 			ReleasedBy: account.ID,
 		})
 		if err != nil {
 			log.Printf("deploy succeeded but failed to save: %v", err)
+		}
+
+		// clear the cache of any builds that are based on this same
+		// version of Caddy; this is helpful if deploying at a branch
+		// name where the underlying commit is different but the
+		// cache key is the same because the branch name is the same.
+		err = evictBuildsFromCache("", "", depreq.CaddyVersion)
+		if err != nil {
+			log.Printf("evicting affected builds from cache: %v", err)
+			return
 		}
 	}()
 
@@ -81,16 +137,17 @@ func deployPluginHandler(w http.ResponseWriter, r *http.Request) {
 		PluginID      string `json:"plugin_id"`
 		PluginVersion string `json:"plugin_version"`
 	}
-	var info DeployRequest
-	err := json.NewDecoder(r.Body).Decode(&info)
+	var depreq DeployRequest
+	err := json.NewDecoder(r.Body).Decode(&depreq)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// load plugin from database
-	pl, err := loadPlugin(info.PluginID)
+	pl, err := loadPlugin(depreq.PluginID)
 	if err != nil {
+		log.Printf("deploy plugin: error loading plugin from database: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -98,20 +155,44 @@ func deployPluginHandler(w http.ResponseWriter, r *http.Request) {
 	// make sure user has permission to deploy this plugin
 	account := r.Context().Value(CtxKey("account")).(AccountInfo)
 	if pl.OwnerAccountID != account.ID {
+		log.Printf("deploy plugin: account %s is not authorized to deploy plugin %s", account.ID, pl.ID)
 		http.Error(w, "your account is not unauthorized to deploy this plugin", http.StatusForbidden)
 		return
 	}
 
-	// reject if there is already a release at this version
-	for _, rel := range pl.Releases {
-		if rel.Version == info.PluginVersion {
-			http.Error(w, "plugin already released at that version", http.StatusConflict)
-			return
+	// analyze repo to 1) ensure that all plugin names are unique within repo,
+	// and 2) that the plugin exists with the same name and type as before
+	infos, err := allPluginInfos(pl.SourceRepo, depreq.PluginVersion, "", true)
+	if err != nil {
+		log.Printf("deploy plugin: error getting plugin infos in %s: %v", pl.SourceRepo, err)
+		http.Error(w, "error checking plugin repository; ensure repo URL is correct", http.StatusBadRequest)
+		return
+	}
+	if duplicate, dupName := anyDuplicatePluginName(infos); duplicate {
+		log.Printf("deploy plugin: repository %s has a repeated plugin name: %s", pl.SourceRepo, dupName)
+		http.Error(w, "plugin name is not unique within repository", http.StatusBadRequest)
+		return
+	}
+	var found bool
+	for _, info := range infos {
+		if info.Name == pl.Name {
+			found = true
+			if info.Type.ID != pl.Type.ID {
+				log.Printf("deploy plugin: plugin %s has changed types: from %s to %s",
+					pl.ID, pl.Type.ID, info.Type.ID)
+				http.Error(w, "plugin has changed types", http.StatusBadRequest)
+				return
+			}
 		}
+	}
+	if !found {
+		log.Printf("deploy plugin: plugin %s seems to have disappeared from repo %s", pl.ID, pl.SourceRepo)
+		http.Error(w, "plugin not found in source repo", http.StatusBadRequest)
+		return
 	}
 
 	// initiate deploy
-	err = deployPlugin(pl.ID, pl.ImportPath, info.PluginVersion, account)
+	err = deployPlugin(pl.ID, pl.ImportPath, depreq.PluginVersion, account)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -195,7 +276,7 @@ func populateDownloadPage(w http.ResponseWriter, r *http.Request) {
 	}
 	dlinfo.Latest = rel
 
-	plugins, err := loadAllPlugins()
+	plugins, err := loadAllPlugins("")
 	if err != nil {
 		log.Printf("download-page: loading all plugins: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)

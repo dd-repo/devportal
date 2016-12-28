@@ -71,6 +71,8 @@ func githubWebhook(w http.ResponseWriter, r *http.Request) {
 	// TODO: implement.
 }
 
+// TODO: See https://groob.io/tutorial/go-github-webhook/
+// for ways to improve/shorten this
 func authenticateGitHubWebhook(r *http.Request) (int, error) {
 	// ensure request has necessary parameters
 	if r.Method != "POST" {

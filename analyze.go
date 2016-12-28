@@ -21,7 +21,7 @@ import (
 var clonedRepos = make(map[string]string) // map of clone URL+branch to tmp dir
 var clonedReposMu sync.Mutex
 
-const clonedRepoCacheExpiry = 10 * time.Minute
+const clonedRepoCacheExpiry = 24 * time.Hour * 7
 
 func init() {
 	// clean up temporary folders when closed
@@ -39,21 +39,21 @@ func init() {
 }
 
 // allPluginInfos gets a list of plugin registrations discovered
-// by static analysis at the given version of repo. If allowCache
-// is true, the repo will not be cloned anew if it was recently
-// cloned. If subfolder is specified, then only the package at
+// by static analysis at the given version of repo. If pullLatest
+// is true, the latest repo will be pulled if it is already in
+// the cache. If subfolder is specified, then only the package at
 // that subfolder will be analyzed.
-func allPluginInfos(repo, version, subfolder string, allowCache bool) ([]Plugin, error) {
+func allPluginInfos(repo, version, subfolder string, pullLatest bool) ([]Plugin, error) {
 	var infos []Plugin
 
 	// standardize input
 	repo, version = strings.ToLower(repo), strings.ToLower(version)
 	if !strings.HasPrefix(repo, "https://") {
-		return infos, fmt.Errorf("clone URL must use https://")
+		return infos, fmt.Errorf("clone URL must use https://, got: %s", repo)
 	}
 
 	// clone the repo (if needed)
-	tmpdir, err := cloneRepo(allowCache, repo, version)
+	tmpdir, err := cloneRepo(pullLatest, repo, version)
 	if err != nil {
 		return infos, err
 	}
@@ -169,25 +169,22 @@ func filterPluginRegistrations(pluginType PluginType, allCalls []PluginCallExpr)
 }
 
 // cloneRepo clones branch from repo into a temporary
-// directory. If allowCache is true, it will not do a
-// new clone if the repo@version is already in the cache.
-// This function creates a temporary directory that
-// must be cleaned up by the caller! And if allowCache
-// is false, then the caller must delete the temporary
-// folder when done. If allowCache is true, the temporary
-// folder will be cleaned up automatically when it
-// expires from the cache.
+// directory. If pullLatest is true, it will update
+// it with a git pull if repo@version is already in
+// the cache.
 //
 // The return values are the temporary directory path
 // and an error, if any.
-func cloneRepo(allowCache bool, repo, version string) (string, error) {
-	cacheKey := repo + "@" + version
+func cloneRepo(pullLatest bool, repo, version string) (string, error) {
+	cacheKey := strings.ToLower(repo) + "@" + strings.ToLower(version)
 
 	clonedReposMu.Lock()
 	tmpdir, ok := clonedRepos[cacheKey]
 	clonedReposMu.Unlock()
 
-	if !ok || !allowCache {
+	if !ok {
+		// clone down this repo and cache it for future use
+
 		var err error
 		tmpdir, err = ioutil.TempDir("", "caddy_plugin_")
 		if err != nil {
@@ -203,19 +200,6 @@ func cloneRepo(allowCache bool, repo, version string) (string, error) {
 			return tmpdir, err
 		}
 
-		if version != "" {
-			cmd := exec.Command("git", "checkout", version)
-			cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
-			cmd.Stdout = os.Stdout // TODO: Probably not needed
-			cmd.Stderr = os.Stderr // TODO: Use log
-			cmd.Dir = tmpdir
-			err = cmd.Run()
-			if err != nil {
-				return tmpdir, err
-			}
-		}
-
-		// cache this repo for near-future use
 		clonedReposMu.Lock()
 		clonedRepos[cacheKey] = tmpdir
 		clonedReposMu.Unlock()
@@ -227,6 +211,28 @@ func cloneRepo(allowCache bool, repo, version string) (string, error) {
 			clonedReposMu.Unlock()
 			os.RemoveAll(tmpdir)
 		}(tmpdir, cacheKey)
+	} else if pullLatest {
+		cmd := exec.Command("git", "pull", "--depth=1")
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+		cmd.Stdout = os.Stdout // TODO: Probably not needed
+		cmd.Stderr = os.Stderr // TODO: Use log
+		cmd.Dir = tmpdir
+		err := cmd.Run()
+		if err != nil {
+			return tmpdir, err
+		}
+	}
+
+	if version != "" {
+		cmd := exec.Command("git", "checkout", version)
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+		cmd.Stdout = os.Stdout // TODO: Probably not needed
+		cmd.Stderr = os.Stderr // TODO: Use log
+		cmd.Dir = tmpdir
+		err := cmd.Run()
+		if err != nil {
+			return tmpdir, err
+		}
 	}
 
 	return tmpdir, nil

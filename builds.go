@@ -114,7 +114,7 @@ func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 		// if the plugin is deployed at a branch, since the cache key won't
 		// be different, since branch names don't change while the ref does.
 		// to avoid serving stale content, we just purge these cached builds.
-		err = evictBuildsFromCache(pluginID)
+		err = evictBuildsFromCache(pluginID, version, "")
 		if err != nil {
 			log.Printf("evicting affected builds from cache: %v", err)
 			return

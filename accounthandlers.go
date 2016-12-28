@@ -98,8 +98,9 @@ func listPlugins(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// get list of plugins
-	infos, _, _, _, err := getPluginInfos(r, false, false)
+	infos, _, _, _, err := getPluginInfos(r, true, false)
 	if err != nil {
+		log.Printf("list-plugins: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -111,7 +112,9 @@ func listPlugins(w http.ResponseWriter, r *http.Request) {
 
 // getPluginInfos returns the list of plugins, along with some values
 // on the request: repo, version, and subfolder (in that order).
-func getPluginInfos(r *http.Request, allowCache, requireSubfolder bool) ([]Plugin, string, string, string, error) {
+// If pullLatest is true, the latest will be pulled if the repo is
+// already in the cache; otherwise the repo will stay unchanged.
+func getPluginInfos(r *http.Request, pullLatest, requireSubfolder bool) ([]Plugin, string, string, string, error) {
 	err := r.ParseForm()
 	if err != nil {
 		return nil, "", "", "", err
@@ -129,8 +132,35 @@ func getPluginInfos(r *http.Request, allowCache, requireSubfolder bool) ([]Plugi
 		subfolder = "."
 	}
 
-	infos, err := allPluginInfos(repo, version, subfolder, allowCache)
-	return infos, repo, version, subfolder, err
+	// get list of plugins
+	infos, err := allPluginInfos(repo, version, subfolder, pullLatest)
+	if err != nil {
+		return nil, "", "", "", fmt.Errorf("getting plugin list: %v", err)
+	}
+
+	// reject as error if any plugin name is not unique within this repo,
+	// since it is otherwise impossible to distinguish one from another;
+	// plugins don't have IDs until they're in the database
+	if duplicate, dupName := anyDuplicatePluginName(infos); duplicate {
+		return nil, "", "", "",
+			fmt.Errorf("plugin name '%s' is not unique within repo %s", dupName, repo)
+	}
+
+	return infos, repo, version, subfolder, nil
+}
+
+// anyDuplicatePluginName checks for duplicate plugin names in infos.
+// This will return true if a duplicate is found, along with the
+// non-unique name. Otherwise false will be returned.
+func anyDuplicatePluginName(infos []Plugin) (bool, string) {
+	seen := make(map[string]struct{})
+	for _, info := range infos {
+		if _, ok := seen[info.Name]; ok {
+			return true, info.Name
+		}
+		seen[info.Name] = struct{}{}
+	}
+	return false, ""
 }
 
 // TODO: This should be an actual web page, not an API endpoint...
@@ -162,7 +192,7 @@ func confirmAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// mark the account as verified
-	acc.VerifiedDate = time.Now()
+	acc.VerifiedDate = time.Now().UTC()
 
 	err = saveAccount(acc)
 	if err != nil {
@@ -232,7 +262,7 @@ func registerAccount(w http.ResponseWriter, r *http.Request) {
 		Password:         hashedPass,
 		Salt:             salt,
 		APIKey:           apiKey,
-		RegistrationDate: time.Now(),
+		RegistrationDate: time.Now().UTC(),
 		CaddyMaintainer:  true, // TODO: temporary!
 	}
 
@@ -251,13 +281,20 @@ func registerAccount(w http.ResponseWriter, r *http.Request) {
 func registerPlugin(w http.ResponseWriter, r *http.Request) {
 	infos, repo, version, subfolder, err := getPluginInfos(r, true, false)
 	if err != nil {
+		log.Printf("register-plugin: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	pkg := strings.TrimSpace(r.Form.Get("import_path"))
 	name := strings.TrimSpace(strings.ToLower(r.Form.Get("plugin_name")))
 	pluginType := r.Form.Get("plugin_type")
-	if pkg == "" || name == "" || pluginType == "" {
+	description := strings.TrimSpace(r.Form.Get("description"))
+	website := strings.TrimSpace(r.Form.Get("website"))
+	support := strings.TrimSpace(r.Form.Get("support_link"))
+	docs := strings.TrimSpace(r.Form.Get("docs_link"))
+	if pkg == "" || name == "" || pluginType == "" || description == "" ||
+		website == "" || support == "" || docs == "" {
+		log.Printf("register-plugin: missing required field(s) from: %+v", r.Form)
 		http.Error(w, "missing required field(s)", http.StatusBadRequest)
 		return
 	}
@@ -271,11 +308,11 @@ func registerPlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: ensure import path is unique! (build worker can't distinguish
+	// TODO: ensure import path is unique in DB! (build worker can't distinguish
 	// between different plugins in the same package; it just imports the
 	// whole package... multiple plugins may be in a package but only one
 	// can be published or 'plugged in' by the user, the rest would just
-	// come with it)
+	// come with it, which is fine)
 
 	// select the plugin from the list that matches the
 	// name and type, so we can fill in its information.
@@ -295,11 +332,36 @@ func registerPlugin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// fill in the rest of the information
+	now := time.Now().UTC()
 	account := r.Context().Value(CtxKey("account")).(AccountInfo)
 	pl.OwnerAccountID = account.ID
 	pl.ImportPath = pkg
 	pl.SourceRepo = repo
 	pl.Subfolder = subfolder
+	pl.Description = description
+	pl.Website = website
+	pl.Support = support
+	pl.Docs = docs
+	pl.Published = now
+	pl.Updated = now
+	if len(r.Form["example_title"]) != len(r.Form["example_code"]) ||
+		len(r.Form["example_code"]) != len(r.Form["example_explanation"]) {
+		log.Printf("register-plugin: example fields don't match up: %+v %+v %+v",
+			r.Form["example_title"], r.Form["example_code"], r.Form["example_explanation"])
+		http.Error(w, "example data is mismatched; probably a website bug", http.StatusBadRequest)
+		return
+	}
+	for i := range r.Form["example_code"] {
+		ex := Example{
+			Title:       r.Form["example_title"][i],
+			Code:        r.Form["example_code"][i],
+			Explanation: r.Form["example_explanation"][i],
+		}
+		if ex.Code == "" {
+			continue // skip examples without actual content
+		}
+		pl.Examples = append(pl.Examples, ex)
+	}
 
 	// save plugin to database
 	err = savePlugin(pl)
@@ -309,7 +371,7 @@ func registerPlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Registered plugin %s (%s) (user %s: %s); deploying now",
+	log.Printf("Registered plugin %s (%s) (user %s: %s); initiating deploy",
 		pl.ID, pl.ImportPath, account.ID, account.Email)
 
 	// initiate plugin deploy
