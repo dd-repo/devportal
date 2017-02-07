@@ -21,3 +21,5 @@ To use the build, deploy, or download functions of the developer portal, you wil
 The dev portal caches successful builds. If you will be performing builds locally and don't want to clutter up your disk, set `-cachesize` to a small value (minimum 1, since all downloads are served from the cache).
 
 Change the cache directory by setting `-cachedir` (default is "./cache"). However, keep in mind that any previous cache directories may still be referenced by the database, which stores an index of the cached builds. If you delete a cache directory, be sure to clear its entries from the database.
+
+If you will be using any of the functions to send email, you need to set `SENDGRID_API_KEY` with your SendGrid API key.

@@ -8,10 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"text/template"
+	"time"
 
+	humanize "github.com/dustin/go-humanize"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/securecookie"
 	"github.com/gorilla/sessions"
+	"github.com/russross/blackfriday"
 )
 
 // TemplateContext is a struct that is used to render templates.
@@ -51,6 +54,20 @@ func (c *TemplateContext) Include(filename string, args ...interface{}) (string,
 	return buf.String(), nil
 }
 
+// Markdown returns the HTML contents of the markdown contained in filename
+// (relative to the site root).
+func (c *TemplateContext) Markdown(body string) (string, error) {
+	renderer := blackfriday.HtmlRenderer(0, "", "")
+	var extns int
+	extns |= blackfriday.EXTENSION_TABLES
+	extns |= blackfriday.EXTENSION_FENCED_CODE
+	extns |= blackfriday.EXTENSION_STRIKETHROUGH
+	extns |= blackfriday.EXTENSION_DEFINITION_LISTS
+	markdown := blackfriday.Markdown([]byte(body), renderer, extns)
+
+	return string(markdown), nil
+}
+
 // OwnedPlugins gets a list of plugins owned by the current user.
 func (c *TemplateContext) OwnedPlugins() []Plugin {
 	acct := c.Req.Context().Value(CtxKey("account")).(AccountInfo)
@@ -66,12 +83,20 @@ func (c *TemplateContext) LoadPlugin(id string) (Plugin, error) {
 	return loadPlugin(id)
 }
 
+func (c *TemplateContext) Notifications() ([]Notification, error) {
+	return loadNotifications(c.Account.ID)
+}
+
 func (c *TemplateContext) PathVar(name string) string {
 	return mux.Vars(c.Req)[name]
 }
 
 func (c *TemplateContext) Context(key string) interface{} {
 	return c.Req.Context().Value(CtxKey(key))
+}
+
+func (c *TemplateContext) When(then time.Time) string {
+	return humanize.Time(then)
 }
 
 var cookies = sessions.NewCookieStore(
@@ -82,7 +107,6 @@ var cookies = sessions.NewCookieStore(
 )
 
 func renderTemplatedPage(w http.ResponseWriter, r *http.Request, templatePage string) {
-	siteRoot := "/Users/matt/Sites/newcaddy"
 	ctx := &TemplateContext{
 		root:    siteRoot,
 		Req:     r,

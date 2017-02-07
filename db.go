@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/boltdb/bolt"
 )
@@ -204,6 +205,63 @@ func loadPlugin(pluginID string) (Plugin, error) {
 		return pl, fmt.Errorf("no plugin with ID '%s'", pluginID)
 	}
 	return pl, nil
+}
+
+// setNotifications overwrites any notifications in the user's account
+// and replaces them with the ones in notifs. To delete all notifications,
+// pass in an empty slice.
+func setNotifications(accountID string, notifs []Notification) error {
+	return db.Update(func(tx *bolt.Tx) error {
+		enc, err := gobEncode(notifs)
+		if err != nil {
+			return fmt.Errorf("error encoding for database: %v", err)
+		}
+		b := tx.Bucket([]byte("notifications"))
+		return b.Put([]byte(accountID), enc)
+	})
+}
+
+// saveNewNotification creates a new notification in a user's account.
+// Do not use it to change an existing notification.
+func saveNewNotification(accountID string, level NotifLevel, headline, body string) error {
+	id, err := uniqueID("notifications")
+	if err != nil {
+		return err
+	}
+	notif := Notification{
+		ID:        id,
+		AccountID: accountID,
+		Timestamp: time.Now().UTC(),
+		Headline:  headline,
+		Body:      body,
+		Level:     level,
+	}
+	return db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("notifications"))
+		v := b.Get([]byte(accountID))
+		var notifs []Notification
+		if v != nil {
+			err := gobDecode(v, &notifs)
+			if err != nil {
+				return err
+			}
+		}
+		notifs = append([]Notification{notif}, notifs...) // prepend, so most recent first
+		enc, err := gobEncode(notifs)
+		if err != nil {
+			return fmt.Errorf("error encoding for database: %v", err)
+		}
+		return b.Put([]byte(accountID), enc)
+	})
+}
+
+func loadNotifications(accountID string) ([]Notification, error) {
+	var notifs []Notification
+	err := loadFromDB(&notifs, "notifications", accountID)
+	if err != nil {
+		return nil, err
+	}
+	return notifs, nil
 }
 
 // loadCachedBuild loads the build cached by cacheKey.

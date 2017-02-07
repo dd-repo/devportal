@@ -21,6 +21,11 @@ type AccountInfo struct {
 	VerifiedDate     time.Time
 
 	CaddyMaintainer bool
+
+	EmailNotifyInfo    bool
+	EmailNotifySuccess bool
+	EmailNotifyWarn    bool
+	EmailNotifyError   bool
 }
 
 // APIKeyHex returns the hex-encoded API key
@@ -54,9 +59,9 @@ type Plugin struct {
 	Examples    []Example
 
 	// Information necessary for builds and releases
-	ImportPath    string // `go get` package path
-	SourceRepo    string // `git clone` URL
-	Subfolder     string // TODO: Not used now, because only one published plugin per repo...
+	ImportPath string // `go get` package path
+	SourceRepo string // `git clone` URL
+	// Subfolder     string // TODO: Not used
 	ReleaseBranch string // TODO: For use with webhooks; not currently used...
 
 	Releases  []PluginRelease
@@ -95,18 +100,52 @@ type Example struct {
 
 // PluginRelease stores information about a successful plugin release.
 type PluginRelease struct {
-	Timestamp       time.Time
 	Version         string
 	CaddyVersion    string
+	Timestamp       time.Time
 	TestedPlatforms []buildworker.Platform
 }
 
 // CachedBuild refers to a build that has been cached
 type CachedBuild struct {
 	Config            buildworker.BuildRequest
-	Timestamp         time.Time // when the cached item was initially requested/created
 	CacheKey          string    // the unique key for this cache item
+	Timestamp         time.Time // when the cached item was initially requested/created
 	Dir               string    // the directory where the files are kept
 	ArchiveFilename   string    // name of the archive file
 	SignatureFilename string    // name of the signature file
+}
+
+// Notification represents a notification for an account.
+type Notification struct {
+	ID           string
+	AccountID    string
+	Timestamp    time.Time
+	Headline     string
+	Body         string
+	Acknowledged bool
+	Level        NotifLevel
+}
+
+type NotifLevel int
+
+const (
+	NotifInfo NotifLevel = iota
+	NotifSuccess
+	NotifWarn
+	NotifError
+)
+
+func NotifLevelText(level NotifLevel) string {
+	switch level {
+	case NotifInfo:
+		return "info"
+	case NotifSuccess:
+		return "success"
+	case NotifWarn:
+		return "warning"
+	case NotifError:
+		return "error"
+	}
+	return "unknown"
 }

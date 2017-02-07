@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -78,12 +79,9 @@ func deployCaddyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if depreq.CaddyVersion == "" {
-		// TODO.
-		// blah blah blah
+		http.Error(w, "missing version", http.StatusBadRequest)
+		return
 	}
-
-	// TODO: is there already a release at this version? if so, reject...?
-	// should that be checked by release-caddy as well?
 
 	body, err := json.Marshal(depreq)
 	if err != nil {
@@ -165,7 +163,7 @@ func deployPluginHandler(w http.ResponseWriter, r *http.Request) {
 	infos, err := allPluginInfos(pl.SourceRepo, depreq.PluginVersion, "", true)
 	if err != nil {
 		log.Printf("deploy plugin: error getting plugin infos in %s: %v", pl.SourceRepo, err)
-		http.Error(w, "error checking plugin repository; ensure repo URL is correct", http.StatusBadRequest)
+		http.Error(w, "error checking plugin repository; ensure repo and version are correct", http.StatusBadRequest)
 		return
 	}
 	if duplicate, dupName := anyDuplicatePluginName(infos); duplicate {
@@ -201,6 +199,20 @@ func deployPluginHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+func loggedInRedir(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, err := getLoggedInAccount(r); err == nil {
+			http.Redirect(w, r, "/account/dashboard", http.StatusSeeOther)
+			return
+		}
+		h.ServeHTTP(w, r)
+	}
+}
+
+func staticPage(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, filepath.Join(siteRoot, r.URL.Path))
+}
+
 func loginPage(w http.ResponseWriter, r *http.Request) {
 	// if user is already logged in, redirect them to dashboard
 	if _, err := getLoggedInAccount(r); err == nil {
@@ -208,6 +220,15 @@ func loginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFile(w, r, "/Users/matt/Sites/newcaddy/account/login.html")
+}
+
+func registerPage(w http.ResponseWriter, r *http.Request) {
+	// if user is already logged in, redirect them to dashboard
+	if _, err := getLoggedInAccount(r); err == nil {
+		http.Redirect(w, r, "/account/dashboard", http.StatusSeeOther)
+		return
+	}
+	http.ServeFile(w, r, "/Users/matt/Sites/newcaddy/account/register.html")
 }
 
 var (

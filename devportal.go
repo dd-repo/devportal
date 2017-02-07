@@ -32,6 +32,46 @@ func Serve(addr, dbFile string) error {
 	}
 	defer db.Close()
 
+	// delete really old notifications
+	go func() {
+		olderThan := (24 * time.Hour * 30) * 6 // 6 months
+		for {
+			db.Update(func(tx *bolt.Tx) error {
+				b := tx.Bucket([]byte("notifications"))
+				c := b.Cursor()
+				for key, val := c.First(); key != nil; key, val = c.Next() {
+					if val == nil {
+						continue
+					}
+					var notifs []Notification
+					err := gobDecode(val, &notifs)
+					if err != nil {
+						return err
+					}
+					var changed bool
+					for i := 0; i < len(notifs); i++ {
+						if time.Since(notifs[i].Timestamp) > olderThan {
+							changed = true
+							notifs = append(notifs[:i], notifs[i+1:]...)
+						}
+					}
+					if changed {
+						enc, err := gobEncode(notifs)
+						if err != nil {
+							return fmt.Errorf("error encoding for database: %v", err)
+						}
+						err = b.Put(key, enc)
+						if err != nil {
+							return err
+						}
+					}
+				}
+				return nil
+			})
+			time.Sleep(6 * time.Hour)
+		}
+	}()
+
 	addRoute := func(methods, path string, h http.HandlerFunc) {
 		methodHandler := make(handlers.MethodHandler)
 		for _, method := range strings.Split(methods, ",") {
@@ -44,17 +84,25 @@ func Serve(addr, dbFile string) error {
 	addRoute("POST", "/api/logout", logout)
 	addRoute("POST", "/api/register-account", registerAccount)
 	addRoute("POST", "/api/confirm-account", confirmAccount)
+	addRoute("POST", "/api/toggle-email", authHandler(toggleEmailNotifs, unauthAPI))
 	addRoute("POST", "/api/repo-plugins", authHandler(listPlugins, unauthAPI))
 	addRoute("POST", "/api/register-plugin", authHandler(registerPlugin, unauthAPI))
+	addRoute("POST", "/api/edit-plugin", authHandler(editPlugin, unauthAPI))
 	addRoute("POST", "/api/deploy-caddy", authHandler(deployCaddyHandler, unauthAPI))
 	addRoute("POST", "/api/deploy-plugin", authHandler(deployPluginHandler, unauthAPI))
 	addRoute("POST", "/webhook/github/{accountID}", githubWebhook)
-	addRoute("GET", "/account/login.html", loginPage)
+	addRoute("GET", "/account/login.html", loggedInRedir(staticPage))
+	addRoute("GET", "/account/register.html", loggedInRedir(staticPage))
+	addRoute("GET", "/account/verify.html", loggedInRedir(staticPage))
 	addRoute("GET", "/account/dashboard.html", authHandler(templatedPage, unauthPage))
 	addRoute("GET", "/account/register-plugin.html", authHandler(templatedPage, unauthPage))
+	addRoute("GET", "/account/notifications.html", authHandler(templatedPage, unauthPage))
 	addRoute("GET", "/account/plugin/{id}", accountTplPluginOwner("/account/plugin-details.html"))
 	addRoute("GET", "/account/plugin/{id}/edit", accountTplPluginOwner("/account/plugin-edit.html"))
 	addRoute("GET", "/account/plugin/{id}/deploy", accountTplPluginOwner("/account/plugin-deploy.html"))
+	addRoute("GET", "/account/unsubscribe", emailUnsubscribe)
+	addRoute("POST", "/account/notification/{id}/ack", authHandler(ackNotification, unauthAPI))
+	addRoute("POST", "/account/notification/{id}/delete", authHandler(deleteNotification, unauthAPI))
 	addRoute("GET,HEAD", "/download/{os}/{arch}", downloadHandler)
 	addRoute("GET,HEAD", "/download/{os}/{arch}/signature", signatureHandler)
 
@@ -157,6 +205,7 @@ const (
 )
 
 var (
-	db     *bolt.DB
-	router = mux.NewRouter()
+	db       *bolt.DB
+	router   = mux.NewRouter()
+	siteRoot = "/Users/matt/Sites/newcaddy" // TODO: Make configurable
 )

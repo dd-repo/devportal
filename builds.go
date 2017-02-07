@@ -12,9 +12,11 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +54,41 @@ func newBuildWorkerRequest(method, endpoint string, jsonBody io.Reader) (*http.R
 	return req, nil
 }
 
+func notifyUser(account AccountInfo, level NotifLevel, title, body string) error {
+	if title == "" {
+		return fmt.Errorf("notification title cannot be empty")
+	}
+
+	err := saveNewNotification(account.ID, level, title, body)
+	if err != nil {
+		return fmt.Errorf("saving notification: %v", err)
+	}
+
+	vals := url.Values{}
+	vals.Set("email", account.Email)
+	vals.Set("account", account.ID)
+	vals.Set("level", strconv.Itoa(int(level)))
+	qs := vals.Encode()
+
+	unsubURL := fmt.Sprintf("https://caddyserver.com/account/unsubscribe?%s", qs)
+	emailBody := fmt.Sprintf("%s\n\nYou received this email because your account on the Caddy website "+
+		"is configured to receive emails for %s notifications.\n"+
+		"To stop receiving %s notifications, click here to unsubscribe: %s",
+		body, NotifLevelText(level), NotifLevelText(level), unsubURL)
+
+	if (level == NotifInfo && account.EmailNotifyInfo) ||
+		(level == NotifSuccess && account.EmailNotifySuccess) ||
+		(level == NotifWarn && account.EmailNotifyWarn) ||
+		(level == NotifError && account.EmailNotifyError) {
+		err = sendEmail(account.Name, account.Email, title, emailBody)
+		if err != nil {
+			return fmt.Errorf("sending notification: %v", err)
+		}
+	}
+
+	return nil
+}
+
 func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 	now := time.Now().UTC()
 
@@ -79,12 +116,41 @@ func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 	}
 
 	go func() {
-		// TODO: On any failure here, notify account...
+		var deployErr error
+		var buildErrInfo struct {
+			Message string
+			Log     string
+		}
+
+		// notify account of success or failure
+		defer func() {
+			plugin, err := loadPlugin(pluginID)
+			if err != nil {
+				log.Printf("Loading plugin after deploy: %v", err)
+				return
+			}
+			if deployErr != nil {
+				title := fmt.Sprintf("%s: Deploy of %s failed", plugin.Name, version)
+				body := fmt.Sprintf("The build worker was unable to deploy %s at version '%s' because of a network "+
+					"or compiler error, or your plugin failed a check. The log is attached.\n\n```\n%s\n%s\n\n%s\n```",
+					plugin.Name, version, deployErr, buildErrInfo.Message, buildErrInfo.Log)
+				err = notifyUser(account, NotifError, title, body)
+				if err != nil {
+					log.Printf("Error notifying user: %v", err)
+				}
+				return
+			}
+			err = notifyUser(account, NotifSuccess, fmt.Sprintf("%s: Successful deploy of %s", plugin.Name, version), "")
+			if err != nil {
+				log.Printf("Notifying user after deploy: %v", err)
+				return
+			}
+		}()
 
 		// send blocking request upstream to build worker
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			log.Printf("plugin deploy failed, network error: %v", err)
+		resp, deployErr := http.DefaultClient.Do(req)
+		if deployErr != nil {
+			log.Printf("plugin deploy failed, network error: %v", deployErr)
 			return
 		}
 		defer resp.Body.Close()
@@ -95,18 +161,20 @@ func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 			if err != nil {
 				log.Printf("failed to read response body: %v", err)
 			}
-			log.Printf("plugin deploy failed: HTTP %d: %s", resp.StatusCode, bytes.TrimSpace(bodyText))
+			log.Printf("plugin deploy failed: HTTP %d (plugin ID: %s)", resp.StatusCode, pluginID)
+			deployErr = fmt.Errorf("plugin deploy failed")
+			json.Unmarshal(bodyText, &buildErrInfo)
 			return
 		}
 
 		// if successful, save the release to the DB
-		err = savePluginRelease(pluginID, PluginRelease{
+		deployErr = savePluginRelease(pluginID, PluginRelease{
 			Timestamp:    now,
 			Version:      version,
 			CaddyVersion: caddyRel.Version,
 		})
-		if err != nil {
-			log.Printf("plugin deploy succeeded but failed to save: %v", err)
+		if deployErr != nil {
+			log.Printf("plugin deploy succeeded but failed to save: %v (plugin ID: %s)", err, pluginID)
 			return
 		}
 
@@ -119,8 +187,6 @@ func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 			log.Printf("evicting affected builds from cache: %v", err)
 			return
 		}
-
-		// TODO: Notify account of success
 	}()
 
 	return nil
@@ -140,6 +206,7 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC()
 
+	// get fundamental os/arch data from request
 	vars := mux.Vars(r)
 	os := vars["os"]
 	arch := vars["arch"]
