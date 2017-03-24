@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -415,7 +416,8 @@ func ackNotification(w http.ResponseWriter, r *http.Request) {
 
 // editNotification will either delete or acknowledge the given notification(s)
 // according to r. If action is "ack", the notification(s) will be acknowledged
-// (marked as read). If "delete", it/they will be deleted.
+// (marked as read). If "delete", it/they will be deleted. The notification ID
+// can be "all" for, well, all of them.
 func editNotification(w http.ResponseWriter, r *http.Request, action string) {
 	account := r.Context().Value(CtxKey("account")).(AccountInfo)
 	notifID := mux.Vars(r)["id"]
@@ -576,11 +578,17 @@ func fillAndCheckPluginFromRequest(r *http.Request, pl *Plugin) (string, int, er
 			fmt.Errorf("a plugin named %s is already published", name)
 	}
 
+	// ensure name is valid
+	if matched, err := regexp.MatchString(`^[\w\d\.]+$`, name); !matched || err != nil {
+		return "plugin name is invalid", http.StatusBadRequest,
+			fmt.Errorf("plugin name '%s' is invalid", name)
+	}
+
 	// TODO: ensure import path is unique in DB? (build worker can't distinguish
 	// between different plugins in the same package; it just imports the
 	// whole package... multiple plugins may be in a package but only one
 	// can be published or 'plugged in' by the user, the rest would just
-	// come with it, which is fine) Is this really needed?
+	// come with it, which is fine) - Is this really needed?
 
 	// ensure plugin is in the repository
 	var found bool
@@ -619,7 +627,7 @@ func fillAndCheckPluginFromRequest(r *http.Request, pl *Plugin) (string, int, er
 	if _, ok := r.Form["clone_url"]; ok {
 		pl.SourceRepo = repo
 	}
-	// if _, ok := r.Form["subfolder"]; ok {
+	// if _, ok := r.Form["subfolder"]; ok { // TODO: needed?
 	// 	pl.Subfolder = subfolder
 	// }
 	if _, ok := r.Form["description"]; ok {

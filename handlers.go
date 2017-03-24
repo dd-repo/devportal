@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/caddyserver/buildworker"
+	humanize "github.com/dustin/go-humanize"
 	"github.com/gorilla/mux"
 )
 
@@ -30,6 +31,39 @@ func accountTplPluginOwner(templateFile string) http.HandlerFunc {
 	return authHandler(pluginOwner(func(w http.ResponseWriter, r *http.Request) {
 		renderTemplatedPage(w, r, templateFile)
 	}), unauthPage)
+}
+
+func docsHandler(w http.ResponseWriter, r *http.Request) {
+	// TODO: This could be cached on the order of minutes
+	// in order to reduce read stress on the DB.
+	plugins, err := loadAllPlugins("")
+	if err != nil {
+		log.Printf("docs handler: loading plugins: %v", err)
+	}
+	pluginMap := make(map[string][]Plugin)
+	for _, plugin := range plugins {
+		pluginMap[plugin.Type.CategoryTitle] = append(pluginMap[plugin.Type.CategoryTitle], plugin)
+	}
+	r = r.WithContext(context.WithValue(r.Context(), CtxKey("plugin_map"), pluginMap))
+
+	// see if this request is asking for a page with information about a plugin
+	pluginName := mux.Vars(r)["pluginName"]
+	plugin, err := loadPluginByName(pluginName)
+	if err == nil {
+		// serve page with plugin details
+		r = r.WithContext(context.WithValue(r.Context(), CtxKey("plugin"), plugin))
+		renderTemplatedPage(w, r, "/docs/_plugin.html")
+		return
+	} else if _, ok := err.(noPluginWithName); ok {
+		// error is okay, just means not a plugin; serve static file
+		renderTemplatedPage(w, r, r.URL.Path)
+		return
+	}
+
+	// some other error
+	log.Printf("loading docs page for plugin %s: %v", pluginName, err)
+	http.Error(w, "error loading page", http.StatusInternalServerError)
+	return
 }
 
 func pluginOwner(h http.HandlerFunc) http.HandlerFunc {
@@ -219,7 +253,7 @@ func loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/account/dashboard", http.StatusSeeOther)
 		return
 	}
-	http.ServeFile(w, r, "/Users/matt/Sites/newcaddy/account/login.html")
+	http.ServeFile(w, r, filepath.Join(siteRoot, r.URL.Path))
 }
 
 func registerPage(w http.ResponseWriter, r *http.Request) {
@@ -228,7 +262,7 @@ func registerPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/account/dashboard", http.StatusSeeOther)
 		return
 	}
-	http.ServeFile(w, r, "/Users/matt/Sites/newcaddy/account/register.html")
+	http.ServeFile(w, r, filepath.Join(siteRoot, r.URL.Path))
 }
 
 var (
@@ -269,11 +303,20 @@ func updateSupportedPlatforms() error {
 }
 
 func populateDownloadPage(w http.ResponseWriter, r *http.Request) {
+	type PluginWithOwner struct {
+		Plugin
+		OwnerName  string
+		LastUpdate string // newest of meta or most recent release
+		Required   bool   // TODO: add an HTTP server type to the list and mark it as required
+	}
 	type DownloadPageInfo struct {
 		Latest    CaddyRelease           `json:"latest_caddy"`
-		Plugins   []Plugin               `json:"plugins"`
+		Plugins   []PluginWithOwner      `json:"plugins"`
 		Platforms []buildworker.Platform `json:"platforms"`
 	}
+
+	// get the list of supported platforms, but
+	// first update the list if it's been a while
 	supportedPlatformsMu.RLock()
 	lastUpdate := supportedPlatformsLastUpdate
 	supportedPlatformsMu.RUnlock()
@@ -289,6 +332,7 @@ func populateDownloadPage(w http.ResponseWriter, r *http.Request) {
 	dlinfo := DownloadPageInfo{Platforms: supportedPlatforms}
 	supportedPlatformsMu.RUnlock()
 
+	// get the current version of Caddy
 	rel, err := loadLatestCaddyRelease()
 	if err != nil {
 		log.Printf("download-page: loading latest Caddy release: %v", err)
@@ -297,6 +341,7 @@ func populateDownloadPage(w http.ResponseWriter, r *http.Request) {
 	}
 	dlinfo.Latest = rel
 
+	// load all the plugins
 	plugins, err := loadAllPlugins("")
 	if err != nil {
 		log.Printf("download-page: loading all plugins: %v", err)
@@ -305,11 +350,28 @@ func populateDownloadPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, plugin := range plugins {
-		if len(plugin.Releases) == 0 {
+		// skip plugins that aren't released or are unpublished
+		if len(plugin.Releases) == 0 || plugin.Unpublished {
 			continue
 		}
-		plugin.Releases = plugin.Releases[len(plugin.Releases)-1:]
-		dlinfo.Plugins = append(dlinfo.Plugins, plugin)
+		ownerAcct, err := loadAccount(plugin.OwnerAccountID)
+		if err != nil {
+			log.Printf("download-page: loading plugin (ID %s) owner information (ID %s): %v", plugin.ID, plugin.OwnerAccountID, err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		plugin.Releases = plugin.Releases[len(plugin.Releases)-1:] // reveal only latest release to save bandwidth
+		plugin.OwnerAccountID = ""                                 // strip owner ID
+		plugin.DownloadCount = -1                                  // strip download count
+		lastUpdate := plugin.Updated
+		if plugin.Releases[0].Timestamp.After(lastUpdate) {
+			lastUpdate = plugin.Releases[0].Timestamp
+		}
+		dlinfo.Plugins = append(dlinfo.Plugins, PluginWithOwner{
+			Plugin:     plugin,
+			OwnerName:  ownerAcct.Name,
+			LastUpdate: humanize.Time(lastUpdate),
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

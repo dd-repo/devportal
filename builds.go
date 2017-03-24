@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/boltdb/bolt"
 	"github.com/caddyserver/buildworker"
 	"github.com/gorilla/mux"
 )
@@ -193,11 +194,11 @@ func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 }
 
 func downloadHandler(w http.ResponseWriter, r *http.Request) {
-	produceDownload("archive", w, r)
+	produceDownload(ofArchive, w, r)
 }
 
 func signatureHandler(w http.ResponseWriter, r *http.Request) {
-	produceDownload("signature", w, r)
+	produceDownload(ofSignature, w, r)
 }
 
 func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
@@ -301,9 +302,18 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
+	// count this download if it's a GET request for an actual copy of Caddy
+	if r.Method == "GET" && ofWhat == ofArchive {
+		err := updateCounts(br)
+		if err != nil {
+			log.Printf("error updating counts in DB: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+	}
+
 	sendDownload := func(cb CachedBuild) {
 		dlFile := cb.ArchiveFilename
-		if ofWhat == "signature" {
+		if ofWhat == ofSignature {
 			dlFile = cb.SignatureFilename
 		}
 		err := sendFileDownload(filepath.Join(cb.Dir, dlFile), w, r)
@@ -344,15 +354,26 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
+		// if nobody else has it, we own the lock on this build
 		waitChan = make(chan struct{})
 		pendingDownloads[cacheKey] = waitChan
 		pendingDownloadsMu.Unlock()
 	}
 
-	// otherwise, request a build and cache it for later
+	// request a build and cache it for later
+
+	releaseLock := func() {
+		// let anyone waiting on this build know that they can have it;
+		// this must also be called on error, otherwise requests hang
+		pendingDownloadsMu.Lock()
+		delete(pendingDownloads, cacheKey)
+		pendingDownloadsMu.Unlock()
+		close(waitChan)
+	}
 
 	brBytes, err := json.Marshal(br)
 	if err != nil {
+		releaseLock()
 		log.Printf("error serializing build request: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -360,6 +381,7 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 
 	req, err := newBuildWorkerRequest("POST", "/build", bytes.NewReader(brBytes))
 	if err != nil {
+		releaseLock()
 		log.Printf("error creating upstream request: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -367,6 +389,7 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		releaseLock()
 		log.Printf("error connecting upstream: %v", err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -385,10 +408,11 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 				log.Printf("failed to deserialize JSON response: %v", err)
 			}
 			errMsg = strings.TrimSpace(errInfo.Message)
-			// TODO: What to do with the log information?
+			// TODO: What to do with the log information, errInfo.Log?
 		} else {
 			errMsg = strings.TrimSpace(string(respBody))
 		}
+		releaseLock()
 		log.Printf("build failed: HTTP %d: %s", resp.StatusCode, errMsg)
 		http.Error(w, errMsg, http.StatusBadGateway)
 		return
@@ -397,11 +421,13 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 	// read archive and signature files from response
 	mediaType, params, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil {
+		releaseLock()
 		log.Printf("failed to parse media type: %v", err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	if !strings.HasPrefix(mediaType, "multipart/") {
+		releaseLock()
 		log.Printf("expected multipart response, got: %s", mediaType)
 		http.Error(w, "unexpected response from backend", http.StatusBadGateway)
 		return
@@ -423,21 +449,23 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
+			releaseLock()
 			log.Printf("error reading multipart body: %v", err)
 			http.Error(w, "I/O error", http.StatusBadGateway)
 			return
 		}
 
 		switch p.FormName() {
-		case "archive":
+		case ofArchive:
 			cb.ArchiveFilename = p.FileName()
-		case "signature":
+		case ofSignature:
 			cb.SignatureFilename = p.FileName()
 		}
 
 		fpath := filepath.Join(cb.Dir, p.FileName())
 		err = saveFile(p, fpath)
 		if err != nil {
+			releaseLock()
 			log.Printf("error saving %s to disk: %v", fpath, err)
 			http.Error(w, "I/O error", http.StatusBadGateway)
 			return
@@ -446,15 +474,13 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 
 	err = saveCachedBuild(cb)
 	if err != nil {
+		releaseLock()
 		log.Printf("unable to save cached build to DB: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
-	pendingDownloadsMu.Lock()
-	delete(pendingDownloads, cacheKey)
-	pendingDownloadsMu.Unlock()
-	close(waitChan)
+	releaseLock()
 
 	sendDownload(cb)
 }
@@ -464,8 +490,6 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 // file download. For HEAD requests, only the headers are
 // transmitted.
 func sendFileDownload(file string, w http.ResponseWriter, r *http.Request) error {
-	//w.Header().Set("Expires", b.Expires.Format(http.TimeFormat)) // TODO - cache invalidation/expiry?
-
 	if r.Method == "HEAD" {
 		w.Header().Set("Location", r.URL.String())
 		w.WriteHeader(http.StatusOK)
@@ -513,6 +537,86 @@ func buildCacheKey(br buildworker.BuildRequest) string {
 	hash.Write([]byte(keyStr))
 	sum := hash.Sum(nil)
 	return hex.EncodeToString(sum)
+}
+
+func updateCounts(br buildworker.BuildRequest) error {
+	serialized := []byte(br.Serialize())
+	return db.Update(func(tx *bolt.Tx) error {
+		var aggregates Counts
+		b := tx.Bucket([]byte("counts"))
+		agg := b.Get([]byte("aggregates"))
+		if agg == nil {
+			aggregates.ByArch = make(map[string]int)
+			aggregates.ByOS = make(map[string]int)
+			aggregates.ByVersion = make(map[string]int)
+			aggregates.NumPlugins = make(map[int]int)
+		} else {
+			err := gobDecode(agg, &aggregates)
+			if err != nil {
+				return err
+			}
+		}
+
+		// update aggregate counts
+		aggregates.Total++
+		aggregates.ByOS[br.Platform.OS]++
+		aggregates.ByArch[br.Platform.Arch]++
+		aggregates.ByVersion[br.BuildConfig.CaddyVersion]++
+		aggregates.NumPlugins[len(br.BuildConfig.Plugins)]++
+		aggregates.LastDownload = time.Now().UTC()
+		aggBytes, err := gobEncode(aggregates)
+		if err != nil {
+			return err
+		}
+		err = b.Put([]byte("aggregates"), aggBytes)
+		if err != nil {
+			return err
+		}
+
+		all, err := b.CreateBucketIfNotExists([]byte("all"))
+		if err != nil {
+			return err
+		}
+
+		// update download count for each plugin
+		pluginBucket := tx.Bucket([]byte("plugins"))
+		for _, plugin := range br.BuildConfig.Plugins {
+			pluginBytes := pluginBucket.Get([]byte(plugin.ID))
+			var pl Plugin
+			err := gobDecode(pluginBytes, &pl)
+			if err != nil {
+				return err
+			}
+			pl.DownloadCount++
+			pluginBytes, err = gobEncode(pl)
+			if err != nil {
+				return err
+			}
+			err = pluginBucket.Put([]byte(plugin.ID), pluginBytes)
+			if err != nil {
+				return err
+			}
+		}
+
+		// add this build configuration to the log if it's not already seen,
+		// and increment its download count.
+		var updatedCount int
+		countVal := all.Get(serialized)
+		if countVal == nil {
+			updatedCount = 1
+		} else {
+			err := gobDecode(countVal, &updatedCount)
+			if err != nil {
+				return err
+			}
+			updatedCount++
+		}
+		newCount, err := gobEncode(updatedCount)
+		if err != nil {
+			return err
+		}
+		return all.Put(serialized, newCount)
+	})
 }
 
 // PluginList is a sort.Interface list of plugins.
@@ -581,4 +685,9 @@ var (
 
 	// BuildWorkerClientKey is the password/key for the build worker.
 	BuildWorkerClientKey string
+)
+
+const (
+	ofArchive   = "archive"
+	ofSignature = "signature"
 )

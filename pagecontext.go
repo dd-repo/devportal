@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/template"
 	"time"
 
@@ -79,11 +80,15 @@ func (c *TemplateContext) OwnedPlugins() []Plugin {
 	return plugins
 }
 
+func (c *TemplateContext) LoadAccount(acctID string) (AccountInfo, error) {
+	return loadAccount(acctID)
+}
+
 func (c *TemplateContext) LoadPlugin(id string) (Plugin, error) {
 	return loadPlugin(id)
 }
 
-func (c *TemplateContext) Notifications() ([]Notification, error) {
+func (c *TemplateContext) Notifications() (NotificationList, error) {
 	return loadNotifications(c.Account.ID)
 }
 
@@ -99,6 +104,14 @@ func (c *TemplateContext) When(then time.Time) string {
 	return humanize.Time(then)
 }
 
+func (c *TemplateContext) PathMatches(other string) bool {
+	return strings.HasPrefix(c.Req.URL.Path, other)
+}
+
+func (c *TemplateContext) Now(layout string) string {
+	return time.Now().Format(layout)
+}
+
 var cookies = sessions.NewCookieStore(
 	securecookie.GenerateRandomKey(64),
 	securecookie.GenerateRandomKey(32),
@@ -107,16 +120,21 @@ var cookies = sessions.NewCookieStore(
 )
 
 func renderTemplatedPage(w http.ResponseWriter, r *http.Request, templatePage string) {
+	acct, _ := r.Context().Value(CtxKey("account")).(AccountInfo) // may be nil; is OK for some pages
 	ctx := &TemplateContext{
 		root:    siteRoot,
 		Req:     r,
-		Account: r.Context().Value(CtxKey("account")).(AccountInfo),
+		Account: acct,
 	}
 
 	tmpl, err := template.ParseFiles(filepath.Join(siteRoot, templatePage))
 	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "404 page not found", http.StatusNotFound)
+			return
+		}
 		log.Printf("template parsing: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "error rendering page; please file issue at https://github.com/caddyserver/website", http.StatusInternalServerError)
 		return
 	}
 

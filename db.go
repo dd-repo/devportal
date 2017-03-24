@@ -21,7 +21,7 @@ var bucketNames = []string{
 	"index:namesToPlugins",
 	"notifications",
 	"plugins",
-	//"pluginsCachedBuilds",
+	"counts",
 }
 
 // openDB opens the database at file and returns it,
@@ -336,15 +336,20 @@ func evictBuildsFromCache(pluginID, pluginVersion, caddyVersion string) error {
 	})
 }
 
+type noPluginWithName error
+
 // loadPluginByName loads the plugin by pluginName.
 func loadPluginByName(pluginName string) (Plugin, error) {
+	if pluginName == "" {
+		return Plugin{}, noPluginWithName(fmt.Errorf("no plugin named '%s'", pluginName))
+	}
 	var pl Plugin
 	pluginID, err := loadFromDBRaw("index:namesToPlugins", pluginName)
 	if err != nil {
 		return pl, err
 	}
 	if len(pluginID) == 0 {
-		return pl, fmt.Errorf("no plugin named '%s'", pluginName)
+		return pl, noPluginWithName(fmt.Errorf("no plugin named '%s'", pluginName))
 	}
 	return loadPlugin(string(pluginID))
 }

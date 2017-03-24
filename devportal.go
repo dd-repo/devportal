@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	mathrand "math/rand"
 	"net/http"
 	"strings"
@@ -34,9 +35,9 @@ func Serve(addr, dbFile string) error {
 
 	// delete really old notifications
 	go func() {
-		olderThan := (24 * time.Hour * 30) * 6 // 6 months
+		olderThan := (24 * time.Hour * 30) * 12 // 1 year
 		for {
-			db.Update(func(tx *bolt.Tx) error {
+			err := db.Update(func(tx *bolt.Tx) error {
 				b := tx.Bucket([]byte("notifications"))
 				c := b.Cursor()
 				for key, val := c.First(); key != nil; key, val = c.Next() {
@@ -68,6 +69,9 @@ func Serve(addr, dbFile string) error {
 				}
 				return nil
 			})
+			if err != nil {
+				log.Printf("[ERROR] Removing old notifications: %v", err)
+			}
 			time.Sleep(6 * time.Hour)
 		}
 	}()
@@ -79,6 +83,9 @@ func Serve(addr, dbFile string) error {
 		}
 		router.Handle(path, methodHandler)
 	}
+
+	addRoute("GET", "/docs.html", docsHandler)
+	addRoute("GET", "/docs/{pluginName}", docsHandler) // handler will check if {pluginName} is actually a static file
 	addRoute("GET", "/api/download-page", populateDownloadPage)
 	addRoute("POST", "/api/login", login)
 	addRoute("POST", "/api/logout", logout)
@@ -207,5 +214,5 @@ const (
 var (
 	db       *bolt.DB
 	router   = mux.NewRouter()
-	siteRoot = "/Users/matt/Sites/newcaddy" // TODO: Make configurable
+	siteRoot = "/Users/matt/Sites/newcaddy/site" // TODO: Make configurable
 )

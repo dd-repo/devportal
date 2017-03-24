@@ -41,6 +41,16 @@ type CaddyRelease struct {
 	ReleasedBy string // the ID of the account that did the release
 }
 
+// Counts keeps a basic record of download counts.
+type Counts struct {
+	Total        int
+	ByOS         map[string]int
+	ByArch       map[string]int
+	ByVersion    map[string]int
+	NumPlugins   map[int]int
+	LastDownload time.Time
+}
+
 // Plugin stores information about a plugin.
 type Plugin struct {
 	ID             string
@@ -66,7 +76,10 @@ type Plugin struct {
 
 	Releases  []PluginRelease
 	Published time.Time
-	Updated   time.Time // TODO: does a release count as an update? I vote no...
+	Updated   time.Time // timestamp when information about the plugin was last updated
+
+	Unpublished   bool `json:"-"` // whether the plugin is currently unpublished (i.e. hidden)
+	DownloadCount int  // how many times this plugin has been included in a download
 }
 
 // LatestRelease returns the latest release, if there is one;
@@ -148,4 +161,16 @@ func NotifLevelText(level NotifLevel) string {
 		return "error"
 	}
 	return "unknown"
+}
+
+type NotificationList []Notification
+
+func (list NotificationList) UnreadCount() int {
+	count := 0
+	for _, n := range list {
+		if !n.Acknowledged {
+			count++
+		}
+	}
+	return count
 }
