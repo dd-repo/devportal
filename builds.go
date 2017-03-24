@@ -408,13 +408,14 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 				log.Printf("failed to deserialize JSON response: %v", err)
 			}
 			errMsg = strings.TrimSpace(errInfo.Message)
-			// TODO: What to do with the log information, errInfo.Log?
+			log.Printf("[BUILD ERROR] %s >>>>>>>>>>>>>\n%s\n<<<<<<<<<<<<<\n",
+				errMsg, strings.TrimSpace(errInfo.Log))
 		} else {
 			errMsg = strings.TrimSpace(string(respBody))
 		}
 		releaseLock()
 		log.Printf("build failed: HTTP %d: %s", resp.StatusCode, errMsg)
-		http.Error(w, errMsg, http.StatusBadGateway)
+		http.Error(w, errMsg, http.StatusInternalServerError)
 		return
 	}
 
