@@ -7,11 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	mathrand "math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"time"
+
+	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 
 	"golang.org/x/crypto/scrypt"
 
@@ -26,6 +30,23 @@ func init() {
 
 // Serve begins the developer portal listening.
 func Serve(addr, dbFile string) error {
+	// set up log before anything bad happens
+	switch Log {
+	case "stdout":
+		log.SetOutput(os.Stdout)
+	case "stderr":
+		log.SetOutput(os.Stderr)
+	case "":
+		log.SetOutput(ioutil.Discard)
+	default:
+		log.SetOutput(&lumberjack.Logger{
+			Filename:   Log,
+			MaxSize:    100,
+			MaxAge:     120,
+			MaxBackups: 5,
+		})
+	}
+
 	var err error
 	db, err = openDB(dbFile)
 	if err != nil {
@@ -214,5 +235,6 @@ const (
 var (
 	db       *bolt.DB
 	router   = mux.NewRouter()
-	siteRoot = "/Users/matt/Sites/newcaddy/site" // TODO: Make configurable
+	SiteRoot string
+	Log      = "devportal.log"
 )

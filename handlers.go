@@ -244,7 +244,7 @@ func loggedInRedir(h http.HandlerFunc) http.HandlerFunc {
 }
 
 func staticPage(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, filepath.Join(siteRoot, r.URL.Path))
+	http.ServeFile(w, r, filepath.Join(SiteRoot, r.URL.Path))
 }
 
 func loginPage(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +253,7 @@ func loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/account/dashboard", http.StatusSeeOther)
 		return
 	}
-	http.ServeFile(w, r, filepath.Join(siteRoot, r.URL.Path))
+	http.ServeFile(w, r, filepath.Join(SiteRoot, r.URL.Path))
 }
 
 func registerPage(w http.ResponseWriter, r *http.Request) {
@@ -262,7 +262,7 @@ func registerPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/account/dashboard", http.StatusSeeOther)
 		return
 	}
-	http.ServeFile(w, r, filepath.Join(siteRoot, r.URL.Path))
+	http.ServeFile(w, r, filepath.Join(SiteRoot, r.URL.Path))
 }
 
 var (

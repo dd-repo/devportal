@@ -122,12 +122,12 @@ var cookies = sessions.NewCookieStore(
 func renderTemplatedPage(w http.ResponseWriter, r *http.Request, templatePage string) {
 	acct, _ := r.Context().Value(CtxKey("account")).(AccountInfo) // may be nil; is OK for some pages
 	ctx := &TemplateContext{
-		root:    siteRoot,
+		root:    SiteRoot,
 		Req:     r,
 		Account: acct,
 	}
 
-	tmpl, err := template.ParseFiles(filepath.Join(siteRoot, templatePage))
+	tmpl, err := template.ParseFiles(filepath.Join(SiteRoot, templatePage))
 	if err != nil {
 		if os.IsNotExist(err) {
 			http.Error(w, "404 page not found", http.StatusNotFound)

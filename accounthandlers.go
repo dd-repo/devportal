@@ -273,7 +273,6 @@ func registerAccount(w http.ResponseWriter, r *http.Request) {
 		Salt:               salt,
 		APIKey:             apiKey,
 		RegistrationDate:   time.Now().UTC(),
-		CaddyMaintainer:    true, // TODO: temporary!
 		EmailNotifyInfo:    true,
 		EmailNotifySuccess: true,
 		EmailNotifyWarn:    true,

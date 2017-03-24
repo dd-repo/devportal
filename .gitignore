@@ -1,3 +1,4 @@
 _gitignore/
-caddy.db
 cmd/devportal/cache/
+*.log
+*.db
