@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -62,48 +63,56 @@ func allPluginInfos(repo, version, subfolder string, pullLatest bool) ([]Plugin,
 
 	// get a list of all the packages in the repo or, if
 	// specified, the specific subfolder only
-	var pkgs []*ast.Package
-	addPkg := func(path string) error {
+	processDirPkgs := func(path string) error {
 		dirpkgs, err := parser.ParseDir(fset, path, nil, 0)
 		if err != nil {
 			return err
 		}
+		var pkgs []*ast.Package
 		for _, pkg := range dirpkgs {
 			pkgs = append(pkgs, pkg)
 		}
+
+		// find all function calls
+		allFnCalls := findFunctions(pkgs, fset)
+
+		// filter just the plugin registration calls
+		var allRegCalls []PluginCallExpr
+		for _, pluginType := range pluginTypes {
+			allRegCalls = append(allRegCalls, filterPluginRegistrations(pluginType, allFnCalls)...)
+		}
+
+		// get information about each plugin registration
+		for _, regcall := range allRegCalls {
+			info, err := regcall.PluginType.GetInfo(fset, regcall)
+			if err != nil {
+				return err
+			}
+			info.Type = regcall.PluginType
+			infos = append(infos, info)
+		}
+
+		// analyzing large repos can be expensive, and
+		// this does help for some quirk with the GC
+		// and can reduce memory pressure by double-digit
+		// MB in some cases.
+		debug.FreeOSMemory()
+
 		return nil
 	}
+
 	if subfolder != "" {
-		err = addPkg(filepath.Join(tmpdir, subfolder))
+		err = processDirPkgs(filepath.Join(tmpdir, subfolder))
 	} else {
 		err = filepath.Walk(tmpdir, func(path string, info os.FileInfo, err error) error {
 			if !info.IsDir() {
 				return nil
 			}
-			return addPkg(path)
+			return processDirPkgs(path)
 		})
 	}
 	if err != nil {
 		return infos, err
-	}
-
-	// find all function calls
-	allFnCalls := findFunctions(pkgs, fset)
-
-	// filter just the plugin registration calls
-	var allRegCalls []PluginCallExpr
-	for _, pluginType := range pluginTypes {
-		allRegCalls = append(allRegCalls, filterPluginRegistrations(pluginType, allFnCalls)...)
-	}
-
-	// get information about each plugin registration
-	for _, regcall := range allRegCalls {
-		info, err := regcall.PluginType.GetInfo(fset, regcall)
-		if err != nil {
-			return infos, err
-		}
-		info.Type = regcall.PluginType
-		infos = append(infos, info)
 	}
 
 	return infos, nil
