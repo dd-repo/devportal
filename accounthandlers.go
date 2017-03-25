@@ -680,25 +680,26 @@ func fillAndCheckPluginFromRequest(r *http.Request, pl *Plugin) (string, int, er
 	support := strings.TrimSpace(r.Form.Get("support_link"))
 	docs := strings.TrimSpace(r.Form.Get("docs_link"))
 
+	// if registering a new plugin...
 	if pl.ID == "" {
-		// if registering a new plugin, we need certain information
+		// we need certain information
 		if name == "" || pluginType == "" || pkg == "" || description == "" ||
 			website == "" || support == "" || docs == "" {
 			return "missing required field(s)", http.StatusBadRequest,
 				fmt.Errorf("edit-plugin: missing required field(s) from: %+v", r.Form)
 		}
-	}
 
-	// ensure name is unique
-	if !isUnique("index:namesToPlugins", name) {
-		return "a plugin named '" + name + "' is already published", http.StatusConflict,
-			fmt.Errorf("a plugin named %s is already published", name)
-	}
+		// ensure name is unique
+		if !isUnique("index:namesToPlugins", name) {
+			return "a plugin named '" + name + "' is already published", http.StatusConflict,
+				fmt.Errorf("a plugin named %s is already published", name)
+		}
 
-	// ensure name is valid
-	if matched, err := regexp.MatchString(`^[\w\d\.]+$`, name); !matched || err != nil {
-		return "plugin name is invalid", http.StatusBadRequest,
-			fmt.Errorf("plugin name '%s' is invalid", name)
+		// make sure the plugin name is valid
+		if matched, err := regexp.MatchString(`^[\w\d\.]+$`, name); !matched || err != nil {
+			return "plugin name is invalid", http.StatusBadRequest,
+				fmt.Errorf("plugin name '%s' is invalid", name)
+		}
 	}
 
 	// TODO: ensure import path is unique in DB? (build worker can't distinguish
