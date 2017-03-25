@@ -71,7 +71,7 @@ func notifyUser(account AccountInfo, level NotifLevel, title, body string) error
 	vals.Set("level", strconv.Itoa(int(level)))
 	qs := vals.Encode()
 
-	unsubURL := fmt.Sprintf("https://caddyserver.com/account/unsubscribe?%s", qs)
+	unsubURL := fmt.Sprintf("https://new.caddyserver.com/account/unsubscribe?%s", qs) // TODO: drop 'new.' (also other places!)
 	emailBody := fmt.Sprintf("%s\n\nYou received this email because your account on the Caddy website "+
 		"is configured to receive emails for %s notifications.\n"+
 		"To stop receiving %s notifications, click here to unsubscribe: %s",

@@ -26,11 +26,22 @@ type AccountInfo struct {
 	EmailNotifySuccess bool
 	EmailNotifyWarn    bool
 	EmailNotifyError   bool
+
+	PasswordReset ResetToken
 }
 
 // APIKeyHex returns the hex-encoded API key
 func (a AccountInfo) APIKeyHex() string {
 	return hex.EncodeToString(a.APIKey)
+}
+
+type ResetToken struct {
+	Token   string
+	Created time.Time
+}
+
+func (rt ResetToken) Expired() bool {
+	return time.Since(rt.Created) > 24*time.Hour
 }
 
 // CaddyRelease indicates a version point (commit

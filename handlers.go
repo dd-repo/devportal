@@ -140,6 +140,7 @@ func deployCaddyHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("deploy failed: status %d: %s, error: %v", resp.StatusCode, bodyText, err)
 			return
 		}
+		resp.Body.Close()
 		err = saveCaddyRelease(CaddyRelease{
 			Timestamp:  now,
 			Version:    depreq.CaddyVersion,

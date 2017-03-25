@@ -2,6 +2,7 @@ package devportal
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,12 +38,11 @@ func login(w http.ResponseWriter, r *http.Request) {
 
 	// get account ID to load account
 	var acctID string
-	err = db.View(func(tx *bolt.Tx) error {
+	db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("index:emailsToAccounts"))
 		acctID = string(b.Get(emailKey))
 		return nil
 	})
-
 	if acctID == "" {
 		log.Printf("login: no account found for '%s'", email)
 		http.Error(w, "Unable to log in", http.StatusUnauthorized)
@@ -79,6 +79,123 @@ func login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Printf("Successfully authenticated: %s\n", acc.Email)
+}
+
+func resetPassword(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseForm()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	email := strings.TrimSpace(r.Form.Get("email")) // required
+	token := r.Form.Get("token")
+	password := r.Form.Get("password")
+
+	// email is not case-sensitive
+	emailKey := []byte(strings.ToLower(email))
+
+	// get account ID to load account
+	var acctID string
+	db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("index:emailsToAccounts"))
+		acctID = string(b.Get(emailKey))
+		return nil
+	})
+	if acctID == "" {
+		log.Printf("reset-password: no account with email: %s", email)
+		w.WriteHeader(http.StatusOK) // don't reveal whether an account has this email address
+		return
+	}
+
+	// load account info
+	acc, err := loadAccount(acctID)
+	if err != nil {
+		log.Println("reset-password: error loading from DB:", err)
+		http.Error(w, "Unable to reset password", http.StatusInternalServerError)
+		return
+	}
+
+	if token == "" && password == "" {
+		// step 1: requesting a token
+
+		acc.PasswordReset = ResetToken{
+			Token:   randString(18),
+			Created: time.Now().UTC(),
+		}
+
+		err := saveAccount(acc)
+		if err != nil {
+			log.Printf("reset-password (step 1): error saving account with reset token: %v", err)
+			http.Error(w, "Unable to reset password", http.StatusInternalServerError)
+			return
+		}
+
+		val := url.Values{
+			"email": []string{acc.Email},
+			"token": []string{acc.PasswordReset.Token},
+		}
+		resetPage := "https://new.caddyserver.com/account/reset-password" // TODO: drop 'new.' (also other places!)
+		repl := strings.NewReplacer(
+			"{name}", acc.Name,
+			"{reset_page}", resetPage,
+			"{reset_link}", fmt.Sprintf("%s?%s", resetPage, val.Encode()),
+			"{token}", acc.PasswordReset.Token)
+		body := repl.Replace(resetMsg)
+
+		err = sendEmail(acc.Name, acc.Email, "Reset your Caddy Developer password", body)
+		if err != nil {
+			log.Printf("reset-password: sending token email to %s (account %s): %v", acc.Email, acc.ID, err)
+			http.Error(w, "Error resetting password", http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("reset-password: Sent password reset email for %s (account %s)\n", acc.Email, acc.ID)
+	} else {
+		// step 2: setting new password
+
+		if acc.PasswordReset.Token == "" || acc.PasswordReset.Expired() {
+			log.Printf("reset-password: attempt to reset password for %s (account %s) is unauthorized, token: %+v",
+				acc.Email, acc.ID, acc.PasswordReset)
+			http.Error(w, "Unauthorized to attempt reset", http.StatusUnauthorized)
+			return
+		}
+
+		if subtle.ConstantTimeCompare([]byte(token), []byte(acc.PasswordReset.Token)) != 1 {
+			log.Printf("reset-password: attempt to reset password for %s (account %s) is unauthorized: incorrect token",
+				acc.Email, acc.ID)
+			http.Error(w, "Incorrect reset token", http.StatusUnauthorized)
+			return
+		}
+
+		if len(password) < MinPasswordLength {
+			http.Error(w, fmt.Sprintf("Password must be at least %d characters", MinPasswordLength), http.StatusBadRequest)
+			return
+		}
+
+		hashedPass, salt, err := createPassword(password)
+		if err != nil {
+			log.Printf("reset-password: could not create new password for %s: %v", acc.Email, err)
+			http.Error(w, "Error resetting password", http.StatusInternalServerError) // don't leak details
+			return
+		}
+
+		// set new password and clear reset authorization
+		acc.Password = hashedPass
+		acc.Salt = salt
+		acc.PasswordReset = ResetToken{}
+
+		err = saveAccount(acc)
+		if err != nil {
+			log.Printf("reset-password (step 2): error saving account: %v", err)
+			http.Error(w, "Unable to reset password", http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("reset-password: Successfully reset password for %s (account %s)\n", acc.Email, acc.ID)
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func logout(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +326,7 @@ func confirmAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.WriteHeader(http.StatusOK)
 	log.Printf("confirm-account: Account confirmed: %s", acctID)
 }
 
@@ -292,7 +410,7 @@ func registerAccount(w http.ResponseWriter, r *http.Request) {
 		"email": []string{email},
 		"code":  []string{acctID},
 	}
-	confirmPage := "https://caddyserver.com/account/verify"
+	confirmPage := "https://new.caddyserver.com/account/verify" // TODO: drop 'new.' (and other places!)
 	repl := strings.NewReplacer(
 		"{name}", name,
 		"{confirm_page}", confirmPage,
@@ -675,7 +793,7 @@ const fromEmail = "no-reply@caddyserver.com"
 
 const confirmMsg = `Hi {name},
 
-You (or somebody pretending to be you) has created a new account at caddyserver.com with this email address. 
+You (or somebody pretending to be you) created a new account at caddyserver.com with this email address. 
 
 Before you can use your account, please click this link to activate it:
 
@@ -686,5 +804,21 @@ Or go to {confirm_page} and enter your account ID manually: {account_id}
 This link expires in 48 hours. If you do not wish to keep the account, simply ignore this message and it will be deleted.
 
 Thank you!
+
+-The Caddy Maintainers`
+
+const resetMsg = `Hi {name},
+
+You (or somebody pretending to be you) requested a password reset at caddyserver.com for the account with this email address.
+
+To reset your password, click this link:
+
+{reset_link}
+
+Or go to {reset_page} and enter this token manually: {token}
+
+This token expires in 24 hours.
+
+Farewell!
 
 -The Caddy Maintainers`

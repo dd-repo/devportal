@@ -12,6 +12,7 @@ import (
 	mathrand "math/rand"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -112,6 +113,7 @@ func Serve(addr, dbFile string) error {
 	addRoute("POST", "/api/logout", logout)
 	addRoute("POST", "/api/register-account", registerAccount)
 	addRoute("POST", "/api/confirm-account", confirmAccount)
+	addRoute("POST", "/api/reset-password", resetPassword)
 	addRoute("POST", "/api/toggle-email", authHandler(toggleEmailNotifs, unauthAPI))
 	addRoute("POST", "/api/repo-plugins", authHandler(listPlugins, unauthAPI))
 	addRoute("POST", "/api/register-plugin", authHandler(registerPlugin, unauthAPI))
@@ -122,6 +124,7 @@ func Serve(addr, dbFile string) error {
 	addRoute("GET", "/account/login.html", loggedInRedir(staticPage))
 	addRoute("GET", "/account/register.html", loggedInRedir(staticPage))
 	addRoute("GET", "/account/verify.html", loggedInRedir(staticPage))
+	addRoute("GET", "/account/reset-password.html", loggedInRedir(staticPage))
 	addRoute("GET", "/account/dashboard.html", authHandler(templatedPage, unauthPage))
 	addRoute("GET", "/account/register-plugin.html", authHandler(templatedPage, unauthPage))
 	addRoute("GET", "/account/notifications.html", authHandler(templatedPage, unauthPage))
@@ -197,6 +200,7 @@ func assertPasswordsMatch(plaintext string, hashed, salt []byte) error {
 // hashPassword hashes plaintext with salt using a secure, slow
 // hashing algorithm.
 func hashPassword(plaintext string, salt []byte) ([]byte, error) {
+	defer debug.FreeOSMemory() // wow. https://groups.google.com/forum/#!topic/golang-nuts/I9R9MKUS9bo
 	return scrypt.Key([]byte(plaintext), salt, 1<<14, 8, 1, passwordHashBytes)
 }
 
