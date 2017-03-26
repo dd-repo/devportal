@@ -620,12 +620,21 @@ func updateCounts(br buildworker.BuildRequest) error {
 	})
 }
 
-// PluginList is a sort.Interface list of plugins.
+// PluginList is a sort.Interface list of plugins that sorts plugins
+// by PACKAGE IMPORT PATH, not by name.
 type PluginList []buildworker.CaddyPlugin
 
 func (l PluginList) Len() int           { return len(l) }
 func (l PluginList) Swap(i, j int)      { l[i], l[j] = l[j], l[i] }
 func (l PluginList) Less(i, j int) bool { return l[i].Package < l[j].Package }
+
+// PluginsByName is a sort.Interface list of plugins that sorts plugins
+// by PLUGIN NAME, not package import path.
+type PluginsByName []Plugin
+
+func (l PluginsByName) Len() int           { return len(l) }
+func (l PluginsByName) Swap(i, j int)      { l[i], l[j] = l[j], l[i] }
+func (l PluginsByName) Less(i, j int) bool { return l[i].Name < l[j].Name }
 
 func saveFile(p *multipart.Part, filePath string) error {
 	// ensure directory exists

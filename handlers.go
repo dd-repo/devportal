@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -41,8 +42,10 @@ func docsHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("docs handler: loading plugins: %v", err)
 	}
+	pluginsByName := PluginsByName(plugins)
+	sort.Sort(pluginsByName)
 	pluginMap := make(map[string][]Plugin)
-	for _, plugin := range plugins {
+	for _, plugin := range pluginsByName {
 		pluginMap[plugin.Type.CategoryTitle] = append(pluginMap[plugin.Type.CategoryTitle], plugin)
 	}
 	r = r.WithContext(context.WithValue(r.Context(), CtxKey("plugin_map"), pluginMap))
