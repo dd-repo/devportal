@@ -146,6 +146,7 @@ func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 				log.Printf("Notifying user after deploy: %v", err)
 				return
 			}
+			log.Printf("plugin deploy succeeded: %s@%s (plugin ID: %s)", plugin.Name, version, plugin.ID)
 		}()
 
 		// send blocking request upstream to build worker
@@ -162,7 +163,7 @@ func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 			if err != nil {
 				log.Printf("failed to read response body: %v", err)
 			}
-			log.Printf("plugin deploy failed: HTTP %d (plugin ID: %s)", resp.StatusCode, pluginID)
+			log.Printf("plugin deploy failed: HTTP %d (plugin ID: %s; version: %s)", resp.StatusCode, pluginID, version)
 			deployErr = fmt.Errorf("plugin deploy failed")
 			json.Unmarshal(bodyText, &buildErrInfo)
 			return
@@ -574,11 +575,6 @@ func updateCounts(br buildworker.BuildRequest) error {
 			return err
 		}
 
-		all, err := b.CreateBucketIfNotExists([]byte("all"))
-		if err != nil {
-			return err
-		}
-
 		// update download count for each plugin
 		pluginBucket := tx.Bucket([]byte("plugins"))
 		for _, plugin := range br.BuildConfig.Plugins {
@@ -601,6 +597,10 @@ func updateCounts(br buildworker.BuildRequest) error {
 
 		// add this build configuration to the log if it's not already seen,
 		// and increment its download count.
+		all, err := b.CreateBucketIfNotExists([]byte("all"))
+		if err != nil {
+			return err
+		}
 		var updatedCount int
 		countVal := all.Get(serialized)
 		if countVal == nil {

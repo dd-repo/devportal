@@ -92,10 +92,10 @@ func allPluginInfos(repo, version, subfolder string, pullLatest bool) ([]Plugin,
 			infos = append(infos, info)
 		}
 
-		// analyzing large repos can be expensive, and
-		// this does help for some quirk with the GC
-		// and can reduce memory pressure by double-digit
-		// MB in some cases.
+		// analyzing large repos uses lots of memory,
+		// and by some quirk of the Go 1.8 GC, calling
+		// this manually does in fact reduce _some_
+		// memory pressure (anywhere from 2-30 MB).
 		debug.FreeOSMemory()
 
 		return nil

@@ -453,7 +453,7 @@ func registerPlugin(w http.ResponseWriter, r *http.Request) {
 	}
 	version := strings.TrimSpace(r.Form.Get("version"))
 	if version == "" {
-		version = "master"
+		version = "origin/master" // simply using "master" causes later changes to not be brought in
 	}
 
 	// save plugin to database
@@ -496,7 +496,7 @@ func editPlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if pl.OwnerAccountID != account.ID {
+	if pl.OwnerAccountID != account.ID && !account.CaddyMaintainer { // Caddy maintainers should be able to edit plugins if necessary
 		log.Printf("edit-plugin: account %s does not own plugin %s", account.ID, pl.ID)
 		http.Error(w, "only plugin owners can edit their plugins", http.StatusForbidden)
 		return
@@ -584,7 +584,7 @@ func emailUnsubscribe(w http.ResponseWriter, r *http.Request) {
 
 	level, err := strconv.Atoi(levelStr)
 	if err != nil {
-		log.Printf("unsubscribe (account %s): bad level %d: %v", acctID, levelStr, err)
+		log.Printf("unsubscribe (account %s): bad level '%s': %v", acctID, levelStr, err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

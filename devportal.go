@@ -109,6 +109,7 @@ func Serve(addr, dbFile string) error {
 	addRoute("GET", "/docs.html", docsHandler)
 	addRoute("GET", "/docs/{pluginName}", docsHandler) // handler will check if {pluginName} is actually a static file
 	addRoute("GET", "/api/download-page", populateDownloadPage)
+	addRoute("GET", "/api/stats", authHandler(statsHandler, unauthAPI))
 	addRoute("POST", "/api/login", login)
 	addRoute("POST", "/api/logout", logout)
 	addRoute("POST", "/api/register-account", registerAccount)

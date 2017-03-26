@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/boltdb/bolt"
 	"github.com/caddyserver/buildworker"
 	humanize "github.com/dustin/go-humanize"
 	"github.com/gorilla/mux"
@@ -78,9 +79,10 @@ func pluginOwner(h http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// load the account from the context (should already be authenticated)
-		// to ensure that account is authorized
+		// to ensure that account is authorized with this plugin; Caddy maintainers
+		// can also access plugins.
 		account := r.Context().Value(CtxKey("account")).(AccountInfo)
-		if pl.OwnerAccountID != account.ID {
+		if pl.OwnerAccountID != account.ID && !account.CaddyMaintainer {
 			log.Printf("account %s is not authorized to access plugin %s", account.ID, pluginID)
 			http.Error(w, "account not authorized to access plugin "+pluginID, http.StatusForbidden)
 			return
@@ -187,7 +189,7 @@ func deployPluginHandler(w http.ResponseWriter, r *http.Request) {
 
 	// make sure user has permission to deploy this plugin
 	account := r.Context().Value(CtxKey("account")).(AccountInfo)
-	if pl.OwnerAccountID != account.ID {
+	if pl.OwnerAccountID != account.ID && !account.CaddyMaintainer { // Caddy maintainers also authorized to deploy plugins
 		log.Printf("deploy plugin: account %s is not authorized to deploy plugin %s", account.ID, pl.ID)
 		http.Error(w, "your account is not unauthorized to deploy this plugin", http.StatusForbidden)
 		return
@@ -232,6 +234,43 @@ func deployPluginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func statsHandler(w http.ResponseWriter, r *http.Request) {
+	// only maintainers can see stats
+	account := r.Context().Value(CtxKey("account")).(AccountInfo)
+	if !account.CaddyMaintainer {
+		log.Printf("stats: account %s (%s) does not have permission to view stats", account.ID, account.Email)
+		http.Error(w, "not allowed", http.StatusForbidden)
+		return
+	}
+
+	var aggregates Counts
+	err := db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("counts"))
+		agg := b.Get([]byte("aggregates"))
+		// TODO: There is also the "all" key in the "counts"
+		// bucket, which is a nested bucket of all build
+		// configurations ever produced. Might be worth making
+		// some or all of that information available (could
+		// be quite large).
+		// NOTE: Also, each plugin has its download count
+		// stored with it.
+		return gobDecode(agg, &aggregates)
+	})
+	if err != nil {
+		log.Printf("stats: error loading stats: %v", err)
+		http.Error(w, "unable to load stats", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	err = json.NewEncoder(w).Encode(aggregates)
+	if err != nil {
+		log.Printf("stats: %v", err)
+		return
+	}
 }
 
 func loggedInRedir(h http.HandlerFunc) http.HandlerFunc {
