@@ -85,6 +85,26 @@ var pluginTypes = []PluginType{
 		},
 	},
 	{
+		ID:            "event_hook",
+		Name:          "Event Hook",
+		CategoryTitle: "Event Hooks",
+		Description:   "Plugins that are triggered by events",
+		Package:       "caddy",
+		Function:      "RegisterEventHook",
+		GetInfo: func(fset *token.FileSet, call PluginCallExpr) (Plugin, error) {
+			var info Plugin
+			if len(call.CallExpr.Args) < 1 {
+				return info, fmt.Errorf("not enough arguments")
+			}
+			pname, err := staticEval(fset, call, call.CallExpr.Args[0])
+			if err != nil {
+				log.Println("ERROR:", err)
+			}
+			info.Name = strings.ToLower("hook." + pname)
+			return info, nil
+		},
+	},
+	{
 		ID:            "caddyfile_loader",
 		Name:          "Caddyfile Loader",
 		CategoryTitle: "Caddyfile Loaders",
