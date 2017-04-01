@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -142,7 +143,14 @@ func deployCaddyHandler(w http.ResponseWriter, r *http.Request) {
 				log.Printf("failed to read response body: %v", err)
 			}
 			resp.Body.Close()
-			log.Printf("deploy failed: status %d: %s, error: %v", resp.StatusCode, bodyText, err)
+			log.Printf("deploy caddy failed: status %d: %s, error: %v", resp.StatusCode, bodyText, err)
+			var buildErrInfo struct {
+				Message string
+				Log     string
+			}
+			json.Unmarshal(bodyText, &buildErrInfo)
+			log.Printf("[DEPLOY CADDY ERROR] %s >>>>>>>>>>>>>\n%s\n<<<<<<<<<<<<<\n",
+				buildErrInfo.Message, strings.TrimSpace(buildErrInfo.Log))
 			return
 		}
 		resp.Body.Close()

@@ -1,6 +1,7 @@
 package devportal
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/importer"
@@ -191,6 +192,11 @@ func cloneRepo(pullLatest bool, repo, version string) (string, error) {
 	tmpdir, ok := clonedRepos[cacheKey]
 	clonedReposMu.Unlock()
 
+	// depth of git clone and pull; 1 is fastest but may not pick up on
+	// the tag/commit the user wants to deploy; 100+ may be slow if the
+	// repo is large... choose something comfortable in the middle.
+	const depth = "10"
+
 	if !ok {
 		// clone down this repo and cache it for future use
 
@@ -200,13 +206,15 @@ func cloneRepo(pullLatest bool, repo, version string) (string, error) {
 			return tmpdir, err
 		}
 
-		cmd := exec.Command("git", "clone", "--depth=1", repo, tmpdir)
+		cmd := exec.Command("git", "clone", "--depth="+depth, repo, tmpdir)
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
-		cmd.Stdout = os.Stdout // TODO: Probably not needed
-		cmd.Stderr = os.Stderr // TODO: Use log
+		logBuf := new(bytes.Buffer)
+		cmd.Stdout = logBuf
+		cmd.Stderr = logBuf
 		err = cmd.Run()
 		if err != nil {
-			return tmpdir, err
+			os.RemoveAll(tmpdir)
+			return tmpdir, fmt.Errorf("cloning repository: %v: >>>>>>>>>>>>>>> %s <<<<<<<<<<<<<<<", err, logBuf.String())
 		}
 
 		clonedReposMu.Lock()
@@ -221,26 +229,28 @@ func cloneRepo(pullLatest bool, repo, version string) (string, error) {
 			os.RemoveAll(tmpdir)
 		}(tmpdir, cacheKey)
 	} else if pullLatest {
-		cmd := exec.Command("git", "pull", "--depth=1")
+		cmd := exec.Command("git", "pull", "--depth="+depth)
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
-		cmd.Stdout = os.Stdout // TODO: Probably not needed
-		cmd.Stderr = os.Stderr // TODO: Use log
+		logBuf := new(bytes.Buffer)
+		cmd.Stdout = logBuf
+		cmd.Stderr = logBuf
 		cmd.Dir = tmpdir
 		err := cmd.Run()
 		if err != nil {
-			return tmpdir, err
+			return tmpdir, fmt.Errorf("pulling latest: %v: >>>>>>>>>>>>>>> %s <<<<<<<<<<<<<<<", err, logBuf.String())
 		}
 	}
 
 	if version != "" {
 		cmd := exec.Command("git", "checkout", version)
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
-		cmd.Stdout = os.Stdout // TODO: Probably not needed
-		cmd.Stderr = os.Stderr // TODO: Use log
+		logBuf := new(bytes.Buffer)
+		cmd.Stdout = logBuf
+		cmd.Stderr = logBuf
 		cmd.Dir = tmpdir
 		err := cmd.Run()
 		if err != nil {
-			return tmpdir, err
+			return tmpdir, fmt.Errorf("git checkout: %v: >>>>>>>>>>>>>>> %s <<<<<<<<<<<<<<<", err, logBuf.String())
 		}
 	}
 

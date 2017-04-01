@@ -166,6 +166,8 @@ func deployPlugin(pluginID, pkg, version string, account AccountInfo) error {
 			log.Printf("plugin deploy failed: HTTP %d (plugin ID: %s; version: %s)", resp.StatusCode, pluginID, version)
 			deployErr = fmt.Errorf("plugin deploy failed")
 			json.Unmarshal(bodyText, &buildErrInfo)
+			log.Printf("[DEPLOY ERROR] %s >>>>>>>>>>>>>\n%s\n<<<<<<<<<<<<<\n",
+				buildErrInfo.Message, strings.TrimSpace(buildErrInfo.Log))
 			return
 		}
 
