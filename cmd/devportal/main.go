@@ -41,6 +41,9 @@ func main() {
 	if devportal.BuildWorkerClientID == "" && devportal.BuildWorkerClientKey == "" {
 		fmt.Println("WARNING: No auth for upstream build workers. Set BUILDWORKER_CLIENT_ID and BUILDWORKER_CLIENT_KEY.")
 	}
+	if os.Getenv("SENDGRID_API_KEY") == "" {
+		fmt.Println("WARNING: Emails will not be sent. Set SENDGRID_API_KEY.")
+	}
 
 	fmt.Println("Developer portal serving at", addr)
 	err := devportal.Serve(addr, dbFile)
