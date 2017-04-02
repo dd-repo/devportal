@@ -374,14 +374,23 @@ func populateDownloadPage(w http.ResponseWriter, r *http.Request) {
 	if time.Since(lastUpdate) > 1*time.Hour {
 		err := updateSupportedPlatforms()
 		if err != nil {
+			// not fatal, the download page should still be usable if the
+			// build worker is unavailable; maybe the build wanted by the
+			// visitor is already cached by us; just log this instead.
 			log.Printf("download-page: updating supported platforms: %v", err)
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
 		}
 	}
 	supportedPlatformsMu.RLock()
 	dlinfo := DownloadPageInfo{Platforms: supportedPlatforms}
 	supportedPlatformsMu.RUnlock()
+
+	// it's possible for the list of platforms to be empty; well,
+	// that's no good, probably means we have NEVER contacted
+	// the build worker before. rare, but possible
+	if len(dlinfo.Platforms) == 0 {
+		http.Error(w, "unable to get list of supported platforms", http.StatusBadGateway)
+		return
+	}
 
 	// get the current version of Caddy
 	rel, err := loadLatestCaddyRelease()
