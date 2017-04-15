@@ -275,6 +275,23 @@ func loadCachedBuild(cacheKey string) (CachedBuild, bool, error) {
 	return cb, cb.CacheKey == cacheKey, nil
 }
 
+// evictBuildFromCache evicts a single entry from the build cache,
+// including deleting its folder on disk.
+func evictBuildFromCache(cb CachedBuild) error {
+	return db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("cachedBuilds"))
+		err := os.RemoveAll(cb.Dir)
+		if err != nil {
+			return err
+		}
+		err = b.Delete([]byte(cb.CacheKey))
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 // evictBuildsFromCache will delete builds from the cache so as
 // to avoid serving stale content. For example, if a plugin is
 // deployed at a branch, the branch name may not change even

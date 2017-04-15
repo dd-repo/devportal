@@ -453,7 +453,7 @@ func registerPlugin(w http.ResponseWriter, r *http.Request) {
 	}
 	version := strings.TrimSpace(r.Form.Get("version"))
 	if version == "" {
-		version = "origin/master" // simply using "master" causes later changes to not be brought in
+		version = "origin/master" // simply using "master" causes changes after initial pull to not be brought in
 	}
 
 	// save plugin to database

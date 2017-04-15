@@ -314,17 +314,40 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sendDownload := func(cb CachedBuild) {
+	// sendDownload sends the download of the build cached with cb
+	// to the client. If rebuildIfCacheErr is true, a missing cache
+	// file on the disk will simply cause this function to return
+	// true. If this function returns true, try rebuilding as if it
+	// was never in the cache.
+	sendDownload := func(cb CachedBuild, rebuildIfCacheErr bool) bool {
 		dlFile := cb.ArchiveFilename
 		if ofWhat == ofSignature {
+			if cb.SignatureFilename == "" {
+				log.Printf("[INFO] build signature '%s/%s' unavailable", cb.Dir, cb.SignatureFilename)
+				http.Error(w, "no build signature available", http.StatusNotFound)
+				return false
+			}
 			dlFile = cb.SignatureFilename
 		}
 		err := sendFileDownload(filepath.Join(cb.Dir, dlFile), w, r)
 		if err != nil {
-			log.Println(err)
+			log.Printf("[ERROR] %v", err)
+			if _, ok := err.(cacheError); ok && rebuildIfCacheErr {
+				log.Printf("[INFO] evicting %s from cache and re-building", cb.Dir)
+				err := evictBuildFromCache(cb)
+				if err != nil {
+					log.Printf("[ERROR] evicting build cache entry: %v", err)
+				}
+				return true
+			}
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
+		return false
 	}
+
+	retryBuildIfCacheErr := true
+
+tryBuild:
 
 	// see if this build is cached; if so, use it
 	cacheKey := buildCacheKey(br)
@@ -335,7 +358,11 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cached {
-		sendDownload(cb)
+		retry := sendDownload(cb, retryBuildIfCacheErr)
+		if retry {
+			retryBuildIfCacheErr = false // avoid infinte loop just in case
+			goto tryBuild
+		}
 		return
 	}
 
@@ -353,7 +380,7 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if cached {
-			sendDownload(cb)
+			sendDownload(cb, false)
 			return
 		}
 	} else {
@@ -486,25 +513,34 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 
 	releaseLock()
 
-	sendDownload(cb)
+	sendDownload(cb, false)
 }
+
+// cacheError indicates an error opening a file from the cache.
+type cacheError error
 
 // sendFileDownload sends a file down the pipe to w with a
 // Content-Disposition such that the client will invoke a
 // file download. For HEAD requests, only the headers are
-// transmitted.
+// transmitted. If the error is of type cacheError, then
+// it means the cached file could not be opened.
 func sendFileDownload(file string, w http.ResponseWriter, r *http.Request) error {
+	f, err := os.Open(file)
+	if err != nil {
+		errReturn := fmt.Errorf("error loading cached build: %v", err)
+		if os.IsNotExist(err) {
+			return cacheError(errReturn)
+		}
+		return errReturn
+	}
+	defer f.Close()
+
+	// we do this after opening the file to ensure it exists and that we're able to transmit
 	if r.Method == "HEAD" {
 		w.Header().Set("Location", r.URL.String())
 		w.WriteHeader(http.StatusOK)
 		return nil
 	}
-
-	f, err := os.Open(file)
-	if err != nil {
-		return fmt.Errorf("error loading cached build: %v", err)
-	}
-	defer f.Close()
 
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(file)+`"`)
 	w.WriteHeader(http.StatusOK)
@@ -674,7 +710,7 @@ type BuildError struct {
 // MaxCachedBuilds is the maximum number of builds to cache.
 // Minimum effective value is 1. High values are strongly
 // recommended for production use.
-var MaxCachedBuilds = 1000
+var MaxCachedBuilds = 1500
 
 // BuildCacheDir is the directory in which to store cached builds.
 // Note that this value is used to store the locations of cached
