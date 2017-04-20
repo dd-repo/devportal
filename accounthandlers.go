@@ -135,7 +135,7 @@ func resetPassword(w http.ResponseWriter, r *http.Request) {
 			"email": []string{acc.Email},
 			"token": []string{acc.PasswordReset.Token},
 		}
-		resetPage := "https://new.caddyserver.com/account/reset-password" // TODO: drop 'new.' (also other places!)
+		resetPage := "https://caddyserver.com/account/reset-password"
 		repl := strings.NewReplacer(
 			"{name}", acc.Name,
 			"{reset_page}", resetPage,
@@ -410,7 +410,7 @@ func registerAccount(w http.ResponseWriter, r *http.Request) {
 		"email": []string{email},
 		"code":  []string{acctID},
 	}
-	confirmPage := "https://new.caddyserver.com/account/verify" // TODO: drop 'new.' (and other places!)
+	confirmPage := "https://caddyserver.com/account/verify"
 	repl := strings.NewReplacer(
 		"{name}", name,
 		"{confirm_page}", confirmPage,
