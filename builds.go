@@ -215,7 +215,7 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 	os := vars["os"]
 	arch := vars["arch"]
 	var arm string
-	if strings.HasPrefix(arch, "arm") {
+	if strings.HasPrefix(arch, "arm") && arch != "arm64" {
 		arm = arch[3:]
 		arch = arch[:3]
 	}
