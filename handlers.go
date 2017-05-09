@@ -265,9 +265,26 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 		// configurations ever produced. Might be worth making
 		// some or all of that information available (could
 		// be quite large).
-		// NOTE: Also, each plugin has its download count
-		// stored with it.
-		return gobDecode(agg, &aggregates)
+		err := gobDecode(agg, &aggregates)
+		if err != nil {
+			return err
+		}
+
+		// gather individual plugin counts from the plugins bucket
+		c := tx.Bucket([]byte("plugins")).Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var pl Plugin
+			err := gobDecode(v, &pl)
+			if err != nil {
+				return err
+			}
+			aggregates.ByPlugin = append(aggregates.ByPlugin, nameAndCount{
+				Name:  pl.Name,
+				Count: pl.DownloadCount,
+			})
+		}
+
+		return nil
 	})
 	if err != nil {
 		log.Printf("stats: error loading stats: %v", err)
@@ -275,8 +292,13 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	// sort plugin list by download count (descending)
+	sort.Slice(aggregates.ByPlugin, func(i, j int) bool {
+		return aggregates.ByPlugin[i].Count > aggregates.ByPlugin[j].Count
+	})
 
+	// write JSON response
+	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(aggregates)
 	if err != nil {
 		log.Printf("stats: %v", err)

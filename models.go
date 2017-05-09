@@ -60,6 +60,11 @@ type Counts struct {
 	ByVersion    map[string]int
 	NumPlugins   map[int]int
 	LastDownload time.Time
+	ByPlugin     []nameAndCount
+}
+type nameAndCount struct {
+	Name  string
+	Count int
 }
 
 // Plugin stores information about a plugin.
