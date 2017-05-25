@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -121,9 +122,14 @@ func cachedBuildsMaintenance() error {
 	return nil
 }
 
-// deleteCachedBuild deletes cb from disk and the database.
+// deleteCachedBuild evicts a single entry (cb) from the build
+// cache, including deleting its folder on disk.
 func deleteCachedBuild(cb CachedBuild) error {
 	return db.Update(func(tx *bolt.Tx) error {
+		cleanPath := filepath.Clean(cb.Dir)
+		if cleanPath == "/" || cleanPath == "." {
+			return fmt.Errorf("invalid cache directory! will not delete: %s", cb.Dir)
+		}
 		err := os.RemoveAll(cb.Dir)
 		if err != nil {
 			return err
@@ -275,23 +281,6 @@ func loadCachedBuild(cacheKey string) (CachedBuild, bool, error) {
 	return cb, cb.CacheKey == cacheKey, nil
 }
 
-// evictBuildFromCache evicts a single entry from the build cache,
-// including deleting its folder on disk.
-func evictBuildFromCache(cb CachedBuild) error {
-	return db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("cachedBuilds"))
-		err := os.RemoveAll(cb.Dir)
-		if err != nil {
-			return err
-		}
-		err = b.Delete([]byte(cb.CacheKey))
-		if err != nil {
-			return err
-		}
-		return nil
-	})
-}
-
 // evictBuildsFromCache will delete builds from the cache so as
 // to avoid serving stale content. For example, if a plugin is
 // deployed at a branch, the branch name may not change even
@@ -340,6 +329,10 @@ func evictBuildsFromCache(pluginID, pluginVersion, caddyVersion string) error {
 	return db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("cachedBuilds"))
 		for _, cb := range cachedBuildsToDelete {
+			cleanPath := filepath.Clean(cb.Dir)
+			if cleanPath == "/" || cleanPath == "." {
+				return fmt.Errorf("invalid cache directory! will not delete: %s", cb.Dir)
+			}
 			err := os.RemoveAll(cb.Dir)
 			if err != nil {
 				return err

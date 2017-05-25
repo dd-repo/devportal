@@ -334,7 +334,7 @@ func produceDownload(ofWhat string, w http.ResponseWriter, r *http.Request) {
 			log.Printf("[ERROR] %v", err)
 			if _, ok := err.(cacheError); ok && rebuildIfCacheErr {
 				log.Printf("[INFO] evicting %s from cache and re-building", cb.Dir)
-				err := evictBuildFromCache(cb)
+				err := deleteCachedBuild(cb)
 				if err != nil {
 					log.Printf("[ERROR] evicting build cache entry: %v", err)
 				}
