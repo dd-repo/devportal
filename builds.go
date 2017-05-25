@@ -658,6 +658,43 @@ func updateCounts(br buildworker.BuildRequest) error {
 	})
 }
 
+// resetBuildCacheHandler clears the build cache (if authorized)
+func resetBuildCacheHandler(w http.ResponseWriter, r *http.Request) {
+	account := r.Context().Value(CtxKey("account")).(AccountInfo)
+	if !account.CaddyMaintainer {
+		log.Printf("account %s (%s) tried to reset build cache but is not a maintainer", account.ID, account.Email)
+		http.Error(w, "only maintainers may reset build cache", http.StatusForbidden)
+		return
+	}
+	err := db.Update(func(tx *bolt.Tx) error {
+		err := tx.DeleteBucket([]byte("cachedBuilds"))
+		if err != nil {
+			return err
+		}
+		_, err = tx.CreateBucketIfNotExists([]byte("cachedBuilds"))
+		return err
+	})
+	if err != nil {
+		log.Printf("[ERROR] clearing database build cache: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	cleanPath := filepath.Clean(BuildCacheDir)
+	if cleanPath == "/" || cleanPath == "." {
+		log.Printf("[ERROR] invalid build cache dir, will not delete: %s", BuildCacheDir)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	err = os.RemoveAll(BuildCacheDir)
+	if err != nil {
+		log.Printf("[ERROR] deleting build cache directory: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[INFO] build cache reset by account %s (%s)", account.ID, account.Email)
+	w.WriteHeader(http.StatusOK)
+}
+
 // PluginList is a sort.Interface list of plugins that sorts plugins
 // by PACKAGE IMPORT PATH, not by name.
 type PluginList []buildworker.CaddyPlugin

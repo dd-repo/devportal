@@ -121,6 +121,7 @@ func Serve(addr, dbFile string) error {
 	addRoute("POST", "/api/edit-plugin", authHandler(editPlugin, unauthAPI))
 	addRoute("POST", "/api/deploy-caddy", authHandler(deployCaddyHandler, unauthAPI))
 	addRoute("POST", "/api/deploy-plugin", authHandler(deployPluginHandler, unauthAPI))
+	addRoute("POST", "/api/reset-build-cache", authHandler(resetBuildCacheHandler, unauthAPI))
 	addRoute("POST", "/webhook/github/{accountID}", githubWebhook)
 	addRoute("GET", "/account/login.html", loggedInRedir(staticPage))
 	addRoute("GET", "/account/register.html", loggedInRedir(staticPage))
