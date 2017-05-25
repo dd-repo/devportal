@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -138,8 +139,10 @@ func renderTemplatedPage(w http.ResponseWriter, r *http.Request, templatePage st
 		return
 	}
 
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, ctx)
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+	err = tmpl.Execute(buf, ctx)
 	if err != nil {
 		log.Printf("template execution: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -155,3 +158,9 @@ func renderTemplatedPage(w http.ResponseWriter, r *http.Request, templatePage st
 
 // CtxKey is string used for context.Context values.
 type CtxKey string
+
+var bufPool = &sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
